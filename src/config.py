@@ -38,7 +38,7 @@ class SourceConfig:
 
 @dataclass(frozen=True)
 class DetectionConfig:
-    model: str
+    model: Path  # downloaded here automatically on first run if missing
     fps: float
     min_confidence: float
     zone_mask: tuple[tuple[float, float], ...] | None
@@ -135,7 +135,7 @@ def parse_config(raw: object, base_dir: Path, env: Mapping[str, str]) -> Config:
             file_realtime=_flag(source, "source", "file_realtime"),
         ),
         detection=DetectionConfig(
-            model=_text(detection, "detection", "model"),
+            model=resolve(_text(detection, "detection", "model")),
             fps=float(_number(detection, "detection", "fps", above=0)),
             min_confidence=float(_number(detection, "detection", "min_confidence", above=0, at_most=1)),
             zone_mask=_parse_zone(_value(detection, "detection", "zone_mask")),

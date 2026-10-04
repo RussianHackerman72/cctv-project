@@ -24,8 +24,25 @@ The prompt then starts with `(.venv)`. Without activating, use `.venv\Scripts\py
 python -m src.main --check        # validate config.yaml and .env, then exit
 python -m src.main                # run until Ctrl+C (or the end of a video file)
 python -m src.main --seconds 30   # run for 30 seconds
+python -m src.main --debug-view   # also show a window with boxes around detected people
 pytest                            # unit tests
 ```
+
+The first run downloads the YOLO model (`yolo11n.pt`, ~5 MB) into this folder.
+Ultralytics' anonymous usage statistics are switched off automatically, so the project stays local-only.
+
+## Watch zone (optional)
+
+`detection.zone_mask` limits detection to part of the image. For example, it can ignore people walking past on the street.
+To draw one, run with `--debug-view` and click the corners of the area in order.
+Each click logs a point such as `Clicked at [0.120, 0.450]`. Paste the points into `config.yaml`:
+
+```yaml
+detection:
+  zone_mask: [[0.12, 0.45], [0.88, 0.45], [0.95, 1.0], [0.05, 1.0]]
+```
+
+A person counts if the centre of their box is inside the zone. The zone is drawn in yellow in the debug window.
 
 ## Choosing the video source
 
