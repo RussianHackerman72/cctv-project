@@ -1,0 +1,32 @@
+camera_name: garage
+utc_offset: "+07:00"      # Jakarta (WIB), no daylight saving
+
+source:
+  type: webcam            # webcam | file | rtsp
+  # ${NAME} placeholders are filled in from .env, so credentials stay out of this file.
+  # Real camera: rtsp://${CAMERA_USER}:${CAMERA_PASS}@CAMERA_IP:554/stream2 (detect)
+  #              rtsp://${CAMERA_USER}:${CAMERA_PASS}@CAMERA_IP:554/stream1 (snapshot)
+  detect_url: rtsp://localhost:8554/garage
+  snapshot_url: rtsp://localhost:8554/garage
+  webcam_index: 0
+  file_path: clips/test.mp4
+
+detection:
+  model: yolo11n.pt       # smallest current YOLO model
+  fps: 3                  # frames analysed per second
+  min_confidence: 0.5
+  zone_mask: null         # optional polygon of normalized [x, y] points, e.g. [[0.1, 0.2], [0.9, 0.2], [0.9, 1.0], [0.1, 1.0]]
+
+events:
+  min_presence_seconds: 1.5   # person must persist this long to start an event
+  end_after_seconds: 8        # event ends after this long with no person
+  cooldown_seconds: 60        # ignore re-triggers right after an event
+
+storage:
+  db_path: data/events.db
+  snapshot_dir: data/snapshots
+  retention_days: 14
+
+logging:
+  level: INFO             # DEBUG | INFO | WARNING | ERROR
+  file: logs/camera.log

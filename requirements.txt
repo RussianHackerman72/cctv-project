@@ -1,0 +1,5 @@
+# Runtime dependencies. Ask before adding anything new (see ROADMAP-phase0.md).
+ultralytics~=8.4          # YOLO person detection; also installs torch (CPU), opencv-python, numpy
+python-telegram-bot~=22.0 # Telegram notifications and label buttons
+python-dotenv~=1.0        # loads secrets from .env
+PyYAML~=6.0               # reads config.yaml (also pulled in by ultralytics; listed because we import it)
