@@ -1,12 +1,14 @@
-"""Entry point: python -m src.main [--config config.yaml] [--check]"""
+"""Entry point: python -m src.main [--config config.yaml] [--check] [--seconds N]"""
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
 
+from src import app
 from src.config import Config, ConfigError, load_config
 from src.logging_setup import redact_url, setup_logging
+from src.sources import SourceError
 
 log = logging.getLogger("main")
 
@@ -15,6 +17,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Home camera: garage arrival detection (Phase 0).")
     parser.add_argument("--config", default="config.yaml", help="path to config file (default: config.yaml)")
     parser.add_argument("--check", action="store_true", help="load and validate the config, then exit")
+    parser.add_argument("--seconds", type=float, help="stop after this many seconds (for testing)")
     return parser.parse_args(argv)
 
 
@@ -23,7 +26,7 @@ def log_config_summary(config: Config) -> None:
     if source.type == "webcam":
         where = f"webcam #{source.webcam_index}"
     elif source.type == "file":
-        where = f"file {source.file_path}"
+        where = f"file {source.file_path} ({'realtime' if source.file_realtime else 'fast replay'})"
     else:
         where = f"rtsp {redact_url(source.detect_url)}"
         if source.snapshot_url != source.detect_url:
@@ -61,7 +64,13 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Config OK (--check), exiting")
         return 0
 
-    log.info("Ready. Nothing to run yet: the camera loop arrives in Step 2.")
+    try:
+        app.run(config, max_seconds=args.seconds)
+    except SourceError as exc:
+        log.error("Source problem: %s", exc)
+        return 2
+    except KeyboardInterrupt:
+        log.info("Stopped by user (Ctrl+C)")
     return 0
 
 

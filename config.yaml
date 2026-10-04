@@ -6,10 +6,12 @@ source:
   # ${NAME} placeholders are filled in from .env, so credentials stay out of this file.
   # Real camera: rtsp://${CAMERA_USER}:${CAMERA_PASS}@CAMERA_IP:554/stream2 (detect)
   #              rtsp://${CAMERA_USER}:${CAMERA_PASS}@CAMERA_IP:554/stream1 (snapshot)
-  detect_url: rtsp://localhost:8554/garage
-  snapshot_url: rtsp://localhost:8554/garage
+  # Test stream from MediaMTX. Use 127.0.0.1, not localhost: Windows tries IPv6 (::1) first and times out.
+  detect_url: rtsp://127.0.0.1:8554/garage
+  snapshot_url: rtsp://127.0.0.1:8554/garage
   webcam_index: 0
   file_path: clips/test.mp4
+  file_realtime: true     # false = replay the file as fast as possible (for tuning on clips)
 
 detection:
   model: yolo11n.pt       # smallest current YOLO model

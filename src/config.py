@@ -33,6 +33,7 @@ class SourceConfig:
     snapshot_url: str
     webcam_index: int
     file_path: Path
+    file_realtime: bool
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,7 @@ def parse_config(raw: object, base_dir: Path, env: Mapping[str, str]) -> Config:
             snapshot_url=expand_placeholders(_text(source, "source", "snapshot_url"), env),
             webcam_index=int(_number(source, "source", "webcam_index", at_least=0, whole=True)),
             file_path=resolve(_text(source, "source", "file_path")),
+            file_realtime=_flag(source, "source", "file_realtime"),
         ),
         detection=DetectionConfig(
             model=_text(detection, "detection", "model"),
@@ -187,6 +189,13 @@ def _text(section: dict, where: str, key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"'{where}.{key}' must be a non-empty text value; got {value!r}")
     return value.strip()
+
+
+def _flag(section: dict, where: str, key: str) -> bool:
+    value = _value(section, where, key)
+    if not isinstance(value, bool):
+        raise ConfigError(f"'{where}.{key}' must be true or false; got {value!r}")
+    return value
 
 
 def _number(

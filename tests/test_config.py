@@ -63,9 +63,10 @@ def test_missing_key_raises(raw):
         ("storage", "retention_days", 0),
         ("storage", "retention_days", 2.5),
         ("events", "end_after_seconds", True),
+        ("source", "file_realtime", "yes"),
     ],
 )
-def test_bad_numbers_raise(raw, section, key, bad_value):
+def test_bad_values_raise(raw, section, key, bad_value):
     raw[section][key] = bad_value
     with pytest.raises(ConfigError, match=f"{section}.{key}"):
         parse(raw)

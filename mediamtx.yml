@@ -1,0 +1,26 @@
+# MediaMTX settings for development: a fake camera at rtsp://localhost:8554/garage.
+# Run `mediamtx` from this folder and it picks up this file automatically.
+#
+# Only RTSP is on, and only on this computer (127.0.0.1), so nothing is exposed
+# to the network. To receive a stream from a phone on Wi-Fi, change
+# rtspAddress to :8554 (Windows will then ask about the firewall).
+
+logLevel: info
+
+rtsp: true
+rtspAddress: 127.0.0.1:8554
+rtspTransports: [tcp]
+
+rtmp: false
+hls: false
+webrtc: false
+srt: false
+moq: false
+api: false
+metrics: false
+pprof: false
+playback: false
+
+paths:
+  # Accept any stream name, e.g. "garage".
+  all_others:
