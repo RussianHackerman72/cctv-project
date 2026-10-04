@@ -31,6 +31,19 @@ pytest                            # unit tests
 The first run downloads the YOLO model (`yolo11n.pt`, ~5 MB) into this folder.
 Ultralytics' anonymous usage statistics are switched off automatically, so the project stays local-only.
 
+## How arrivals are counted
+
+Per-frame detections are turned into one **arrival** per visit (`src/events.py`, settings under `events:`):
+
+1. A person must be seen in every analysed frame for `min_presence_seconds` (1.5 s). Shorter sightings are ignored.
+2. The arrival lasts while they're around. Short gaps under `end_after_seconds` (8 s) don't split it.
+3. It ends after `end_after_seconds` with nobody in view.
+4. For `cooldown_seconds` (60 s) after that, new arrivals are ignored, so someone stepping back out doesn't trigger a second alert.
+
+During an arrival, the best snapshot frame is kept: the largest, most confident view of the person.
+The debug window shows the current state in the top-left corner (`IDLE`, `PENDING 0.7s`, `ACTIVE #3`, `COOLDOWN 42s`).
+Per-frame detections are logged only at `logging.level: DEBUG`.
+
 ## Watch zone (optional)
 
 `detection.zone_mask` limits detection to part of the image. For example, it can ignore people walking past on the street.

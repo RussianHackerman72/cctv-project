@@ -75,6 +75,10 @@ class FrameSource:
         """True if the main loop should wait between frames (live sources and realtime files)."""
         return True
 
+    def latest(self) -> Frame | None:
+        """The newest frame, even if read() already returned it (used for snapshots)."""
+        return None
+
 
 def backoff_delay(attempt: int, base: float = 1.0, maximum: float = MAX_BACKOFF_SECONDS) -> float:
     """Seconds to wait before reconnect attempt number `attempt` (0, 1, 2 ...): 1, 2, 4 ... capped."""
@@ -124,6 +128,10 @@ class LiveSource(FrameSource):
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=READ_TIMEOUT_MS / 1000 + 2)
+
+    def latest(self) -> Frame | None:
+        with self._lock:
+            return self._latest
 
     @property
     def last_frame_at(self) -> float | None:

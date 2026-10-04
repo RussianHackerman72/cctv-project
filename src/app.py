@@ -1,13 +1,15 @@
-"""The main loop: take frames at `detection.fps` and look for people in them."""
+"""The main loop: take frames at `detection.fps`, look for people, and turn that into arrivals."""
 from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 
 import cv2
 
 from src.config import Config
 from src.detector import Detection, PersonDetector, Zone, draw_detections
+from src.events import BestImproved, EventEnded, EventStarted, EventTracker, Signal
 from src.sources import Frame, FpsSampler, FrameSource, make_source
 
 log = logging.getLogger("app")
@@ -79,9 +81,12 @@ class DebugView:
         cv2.namedWindow(WINDOW_TITLE, cv2.WINDOW_NORMAL)
         cv2.setMouseCallback(WINDOW_TITLE, self._on_click)
 
-    def show(self, frame: Frame, detections: list[Detection], zone: Zone | None) -> None:
+    def show(self, frame: Frame, detections: list[Detection], zone: Zone | None, status: str) -> None:
         self._shape = frame.image.shape
-        cv2.imshow(WINDOW_TITLE, draw_detections(frame.image, detections, zone))
+        canvas = draw_detections(frame.image, detections, zone)
+        cv2.putText(canvas, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)  # outline
+        cv2.putText(canvas, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.imshow(WINDOW_TITLE, canvas)
 
     def keep_open(self) -> bool:
         """Process window events; False once the user pressed q or closed the window."""
@@ -99,6 +104,44 @@ class DebugView:
             log.info("Clicked at [%.3f, %.3f] (normalized, for zone_mask)", x / width, y / height)
 
 
+class EventHandler:
+    """Acts on the tracker's signals: keeps the best snapshot frame and logs arrivals.
+
+    Step 5 adds saving to the database, Step 6 the Telegram message.
+    """
+
+    def __init__(self, tz: timezone, snapshot_source: FrameSource | None = None):
+        self._tz = tz
+        self._snapshot_source = snapshot_source
+        self.best_frame: Frame | None = None  # best frame of the current (possible) event
+
+    def handle(self, signal: Signal, frame: Frame | None) -> None:
+        if isinstance(signal, BestImproved):
+            self.best_frame = self._snapshot_frame(frame)
+        elif isinstance(signal, EventStarted):
+            log.info(
+                "Arrival #%d started (person seen since %s, confidence %.2f)",
+                signal.event_key, self._clock(signal.started_at), signal.max_confidence,
+            )
+        elif isinstance(signal, EventEnded):
+            log.info(
+                "Arrival #%d ended: %s to %s, max confidence %.2f, best snapshot from %s",
+                signal.event_key, self._clock(signal.started_at), self._clock(signal.ended_at),
+                signal.max_confidence, self._clock(signal.best_timestamp),
+            )
+
+    def _snapshot_frame(self, frame: Frame | None) -> Frame | None:
+        # With a separate high-resolution stream, grab its newest frame (same moment, more detail).
+        if self._snapshot_source is not None:
+            latest = self._snapshot_source.latest()
+            if latest is not None:
+                return latest
+        return frame
+
+    def _clock(self, timestamp: float) -> str:
+        return datetime.fromtimestamp(timestamp, self._tz).strftime("%H:%M:%S")
+
+
 def describe(detections: list[Detection]) -> str:
     confidences = ", ".join(f"{d.confidence:.2f}" for d in detections)
     noun = "person" if len(detections) == 1 else "people"
@@ -111,10 +154,13 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
     detector = PersonDetector.load(config.detection)
 
     source = make_source(config.source, config.detection.fps)
-    # Not used until Step 4 (best snapshot), but started now so its reconnects get exercised.
+    # Separate high-resolution stream for snapshots (RTSP only, when snapshot_url differs).
     snapshot_source = make_source(config.source, config.detection.fps, which="snapshot")
     sources = [s for s in (source, snapshot_source) if s is not None]
 
+    ev = config.events
+    tracker = EventTracker(ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds)
+    handler = EventHandler(config.tz, snapshot_source)
     sampler = FpsSampler(config.detection.fps)
     stats = FrameStats(config.detection.fps)
     view = DebugView() if debug_view else None
@@ -134,14 +180,22 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
                 detections = detector.detect(frame)
                 stats.add(frame, detector.last_inference_ms)
                 if detections:
-                    log.info("Detected %s", describe(detections))
+                    log.debug("Detected %s", describe(detections))
+                for signal in tracker.update(frame.timestamp, detections, frame.image.shape):
+                    handler.handle(signal, frame)
                 if view is not None:
-                    view.show(frame, detections, detector.zone)
+                    view.show(frame, detections, detector.zone, tracker.describe(frame.timestamp))
+            elif source.paced and not source.is_healthy:
+                # Stream is down: let time pass so an open arrival can still end.
+                for signal in tracker.update(time.time(), [], None):
+                    handler.handle(signal, None)
             if view is not None and not view.keep_open():
                 log.info("Debug window closed")
                 break
             stats.maybe_log(source)
     finally:
+        for signal in tracker.finish():
+            handler.handle(signal, None)
         for s in sources:
             s.stop()
         if view is not None:
