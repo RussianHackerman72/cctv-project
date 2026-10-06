@@ -48,10 +48,16 @@ class Zone:
         if len(points) < 3:
             raise ValueError("A zone needs at least 3 points")
         self._points = np.array(points, dtype=np.float32)
+        self._cached_size: tuple[int, int] | None = None
+        self._cached_polygon: np.ndarray | None = None
 
     def pixel_polygon(self, frame_shape: Sequence[int]) -> np.ndarray:
-        height, width = frame_shape[:2]
-        return self._points * np.array([width, height], dtype=np.float32)
+        # The frame size rarely changes, so scale the points once instead of per detection.
+        size = (int(frame_shape[1]), int(frame_shape[0]))
+        if size != self._cached_size:
+            self._cached_polygon = self._points * np.array(size, dtype=np.float32)
+            self._cached_size = size
+        return self._cached_polygon
 
     def contains(self, point: tuple[float, float], frame_shape: Sequence[int]) -> bool:
         """True if the pixel `point` is inside the zone or on its edge."""

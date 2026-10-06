@@ -26,7 +26,8 @@ def test_repo_config_loads(tmp_path):
     config = load_config(ROOT / "config.yaml", env_file=tmp_path / "no.env")
     assert config.camera_name == "garage"
     assert config.source.type in ("webcam", "file", "rtsp")
-    assert config.detection.fps == 3
+    assert config.detection.fps == 10
+    assert (config.source.webcam_width, config.source.webcam_height) == (1280, 720)
     assert config.storage.retention_days == 14
     assert config.tz.utcoffset(None) == timedelta(hours=7)
 
@@ -64,6 +65,8 @@ def test_missing_key_raises(raw):
         ("storage", "retention_days", 2.5),
         ("events", "end_after_seconds", True),
         ("source", "file_realtime", "yes"),
+        ("source", "webcam_width", 0),
+        ("source", "webcam_height", 720.5),
     ],
 )
 def test_bad_values_raise(raw, section, key, bad_value):

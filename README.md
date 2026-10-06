@@ -31,6 +31,13 @@ pytest                            # unit tests
 The first run downloads the YOLO model (`yolo11n.pt`, ~5 MB) into this folder.
 Ultralytics' anonymous usage statistics are switched off automatically, so the project stays local-only.
 
+The debug window shows every camera frame (~30 fps) with the latest boxes drawn on it, while detection runs at `detection.fps` (10).
+It keeps the video's proportions when resized. Press `q` or Esc to close it.
+Without `--debug-view`, the loop only wakes up at `detection.fps`, which saves CPU.
+
+The webcam is asked for `source.webcam_width` x `webcam_height` (1280x720, 16:9) in MJPG, which keeps 720p at full frame rate over USB.
+If the webcam doesn't support that size, it picks the nearest one, and the log shows a warning with the size it actually sent.
+
 ## How arrivals are counted
 
 Per-frame detections are turned into one **arrival** per visit (`src/events.py`, settings under `events:`):

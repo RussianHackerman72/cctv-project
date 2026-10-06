@@ -10,12 +10,14 @@ source:
   detect_url: rtsp://127.0.0.1:8554/garage
   snapshot_url: rtsp://127.0.0.1:8554/garage
   webcam_index: 0
+  webcam_width: 1280      # 1280x720 = 16:9; the webcam picks the nearest size it supports
+  webcam_height: 720
   file_path: clips/test.mp4
   file_realtime: true     # false = replay the file as fast as possible (for tuning on clips)
 
 detection:
   model: yolo11n.pt       # smallest current YOLO model
-  fps: 3                  # frames analysed per second
+  fps: 10                 # frames analysed per second (the debug window still shows every frame)
   min_confidence: 0.5
   zone_mask: null         # optional polygon of normalized [x, y] points, e.g. [[0.1, 0.2], [0.9, 0.2], [0.9, 1.0], [0.1, 1.0]]
 

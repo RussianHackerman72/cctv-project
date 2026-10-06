@@ -62,6 +62,14 @@ def test_zone_scales_with_resolution():
     assert not LOWER_HALF.contains((960, 300), (1080, 1920, 3))
 
 
+def test_zone_follows_a_resolution_change():
+    # The pixel polygon is cached per frame size; a new size must not reuse the old one.
+    zone = Zone([(0, 0.5), (1, 0.5), (1, 1), (0, 1)])
+    assert zone.contains((320, 400), (480, 640, 3))
+    assert not zone.contains((320, 400), (1080, 1920, 3))  # upper half at 1920x1080
+    assert zone.contains((320, 400), (480, 640, 3))
+
+
 def test_zone_needs_three_points():
     with pytest.raises(ValueError):
         Zone([(0, 0), (1, 1)])
