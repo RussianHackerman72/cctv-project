@@ -44,6 +44,15 @@ During an arrival, the best snapshot frame is kept: the largest, most confident 
 The debug window shows the current state in the top-left corner (`IDLE`, `PENDING 0.7s`, `ACTIVE #3`, `COOLDOWN 42s`).
 Per-frame detections are logged only at `logging.level: DEBUG`.
 
+## Stored data
+
+- `data/events.db` (SQLite) has one row per arrival: start and end time (local time with offset, e.g. `2026-10-04T14:32:05+07:00`),
+  max confidence, snapshot path, label (from Step 6) and Telegram message id. It also has `missed_arrivals` for `/missed` reports.
+- `data/snapshots/YYYY-MM-DD/<event id>_<HHMMSS>.jpg` holds one JPEG per arrival. It is saved when the arrival starts,
+  then replaced if a better frame turns up before it ends.
+- **Retention:** snapshots older than `storage.retention_days` (14) are deleted on startup and once a day.
+  The event rows and labels are kept, so the statistics survive.
+
 ## Watch zone (optional)
 
 `detection.zone_mask` limits detection to part of the image. For example, it can ignore people walking past on the street.

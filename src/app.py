@@ -11,6 +11,7 @@ from src.config import Config
 from src.detector import Detection, PersonDetector, Zone, draw_detections
 from src.events import BestImproved, EventEnded, EventStarted, EventTracker, Signal
 from src.sources import Frame, FpsSampler, FrameSource, make_source
+from src.storage import Storage
 
 log = logging.getLogger("app")
 
@@ -105,30 +106,71 @@ class DebugView:
 
 
 class EventHandler:
-    """Acts on the tracker's signals: keeps the best snapshot frame and logs arrivals.
+    """Acts on the tracker's signals: keeps the best snapshot frame, saves events, logs arrivals.
 
-    Step 5 adds saving to the database, Step 6 the Telegram message.
+    The tracker numbers events with its own keys; the database id is the one people see.
+    Step 6 adds the Telegram message.
     """
 
-    def __init__(self, tz: timezone, snapshot_source: FrameSource | None = None):
+    def __init__(
+        self,
+        tz: timezone,
+        snapshot_source: FrameSource | None = None,
+        storage: Storage | None = None,
+        camera: str = "garage",
+    ):
         self._tz = tz
         self._snapshot_source = snapshot_source
+        self._storage = storage
+        self._camera = camera
         self.best_frame: Frame | None = None  # best frame of the current (possible) event
+        self._best_key = 0                    # which tracker key best_frame belongs to
+        self._event_ids: dict[int, int] = {}  # tracker key -> database id
+        self._saved_at: dict[int, float] = {}  # tracker key -> timestamp of the frame saved so far
 
     def handle(self, signal: Signal, frame: Frame | None) -> None:
         if isinstance(signal, BestImproved):
             self.best_frame = self._snapshot_frame(frame)
+            self._best_key = signal.event_key
         elif isinstance(signal, EventStarted):
-            log.info(
-                "Arrival #%d started (person seen since %s, confidence %.2f)",
-                signal.event_key, self._clock(signal.started_at), signal.max_confidence,
-            )
+            self._on_started(signal)
         elif isinstance(signal, EventEnded):
-            log.info(
-                "Arrival #%d ended: %s to %s, max confidence %.2f, best snapshot from %s",
-                signal.event_key, self._clock(signal.started_at), self._clock(signal.ended_at),
-                signal.max_confidence, self._clock(signal.best_timestamp),
-            )
+            self._on_ended(signal)
+
+    def _on_started(self, signal: EventStarted) -> None:
+        name = f"#{signal.event_key}"
+        if self._storage is not None:
+            event_id = self._storage.create_event(self._camera, signal.started_at)
+            self._event_ids[signal.event_key] = event_id
+            name = f"event {event_id}"
+            self._save_best(signal.event_key, event_id)
+        log.info(
+            "Arrival started: %s (person seen since %s, confidence %.2f)",
+            name, self._clock(signal.started_at), signal.max_confidence,
+        )
+
+    def _on_ended(self, signal: EventEnded) -> None:
+        name = f"#{signal.event_key}"
+        event_id = self._event_ids.pop(signal.event_key, None)
+        if self._storage is not None and event_id is not None:
+            name = f"event {event_id}"
+            if self._save_best(signal.event_key, event_id):
+                log.info("Saved a better snapshot for %s", name)
+            self._storage.finish_event(event_id, signal.ended_at, signal.max_confidence)
+        self._saved_at.pop(signal.event_key, None)
+        log.info(
+            "Arrival ended: %s, %s to %s, max confidence %.2f",
+            name, self._clock(signal.started_at), self._clock(signal.ended_at), signal.max_confidence,
+        )
+
+    def _save_best(self, key: int, event_id: int) -> bool:
+        """Save best_frame for this event unless it's already saved. True if a file was written."""
+        frame = self.best_frame
+        if frame is None or self._best_key != key or self._saved_at.get(key) == frame.timestamp:
+            return False
+        self._storage.save_snapshot(event_id, frame.image)
+        self._saved_at[key] = frame.timestamp
+        return True
 
     def _snapshot_frame(self, frame: Frame | None) -> Frame | None:
         # With a separate high-resolution stream, grab its newest frame (same moment, more detail).
@@ -140,6 +182,22 @@ class EventHandler:
 
     def _clock(self, timestamp: float) -> str:
         return datetime.fromtimestamp(timestamp, self._tz).strftime("%H:%M:%S")
+
+
+class DailyRetention:
+    """Runs the snapshot clean-up the first time it's asked on each local day."""
+
+    def __init__(self, storage: Storage, retention_days: int, tz: timezone):
+        self._storage = storage
+        self._days = retention_days
+        self._tz = tz
+        self._last_day: str | None = None
+
+    def run_if_due(self) -> None:
+        today = datetime.now(self._tz).date().isoformat()
+        if today != self._last_day:
+            self._last_day = today
+            self._storage.run_retention(time.time(), self._days)
 
 
 def describe(detections: list[Detection]) -> str:
@@ -158,9 +216,14 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
     snapshot_source = make_source(config.source, config.detection.fps, which="snapshot")
     sources = [s for s in (source, snapshot_source) if s is not None]
 
+    st = config.storage
+    storage = Storage(st.db_path, st.snapshot_dir, config.tz)
+    retention = DailyRetention(storage, st.retention_days, config.tz)
+    retention.run_if_due()  # on startup, then once per day
+
     ev = config.events
     tracker = EventTracker(ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds)
-    handler = EventHandler(config.tz, snapshot_source)
+    handler = EventHandler(config.tz, snapshot_source, storage, config.camera_name)
     sampler = FpsSampler(config.detection.fps)
     stats = FrameStats(config.detection.fps)
     view = DebugView() if debug_view else None
@@ -193,11 +256,13 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
                 log.info("Debug window closed")
                 break
             stats.maybe_log(source)
+            retention.run_if_due()
     finally:
         for signal in tracker.finish():
             handler.handle(signal, None)
         for s in sources:
             s.stop()
+        storage.close()
         if view is not None:
             view.close()
         log.info("Stopped after %d frames", stats.total)
