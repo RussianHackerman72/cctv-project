@@ -98,6 +98,26 @@ def test_presence_must_be_continuous_to_start():
     assert of_type(signals, EventStarted) == []
 
 
+def test_pending_forgives_a_short_miss():
+    # At 10 fps, the detector misses the person in two frames (0.3 s gap) before the start.
+    t = tracker(pending_gap_seconds=0.5)
+    signals = []
+    for i in range(20):
+        seen = i not in (7, 8)
+        signals += t.update(i / 10, [person()] if seen else [], SHAPE if seen else None)
+    [started] = of_type(signals, EventStarted)
+    assert started.started_at == 0  # still counted from the first sighting
+
+
+def test_pending_still_resets_after_a_long_miss():
+    t = tracker(pending_gap_seconds=0.5)
+    t.update(0.0, [person()], SHAPE)
+    t.update(0.4, [], None)
+    assert t.state is State.PENDING   # 0.4 s without a person: forgiven
+    t.update(0.6, [], None)
+    assert t.state is State.IDLE      # 0.6 s: too long, start over
+
+
 def test_short_gap_during_event_keeps_one_event():
     # A 5 s gap (less than end_after) in the middle, e.g. person bending behind a car.
     signals = run(tracker(), timeline((0, 5, [person()]), (10, 15, [person()])))

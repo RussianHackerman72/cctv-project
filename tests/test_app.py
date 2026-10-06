@@ -3,7 +3,7 @@ from datetime import timedelta, timezone
 import numpy as np
 import pytest
 
-from src.app import EventHandler
+from src.app import EventHandler, aspect_name
 from src.events import BestImproved, EventEnded, EventStarted
 from src.sources import Frame, FrameSource
 from src.storage import Storage
@@ -85,6 +85,14 @@ def test_best_frame_prefers_high_resolution_snapshot_stream():
     handler = EventHandler(WIB, FakeSnapshotSource(hires))
     handler.handle(BestImproved(1, 0.5, 100.0), frame(640))
     assert handler.best_frame is hires
+
+
+@pytest.mark.parametrize(
+    "width, height, name",
+    [(1280, 720, "16:9"), (1920, 1080, "16:9"), (720, 1280, "9:16"), (640, 480, "4:3"), (500, 400, "1.25:1")],
+)
+def test_aspect_name(width, height, name):
+    assert aspect_name(width, height) == name
 
 
 def test_falls_back_to_detection_frame_if_snapshot_stream_has_nothing_yet():

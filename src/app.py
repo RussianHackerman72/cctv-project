@@ -18,6 +18,18 @@ log = logging.getLogger("app")
 STATS_EVERY_SECONDS = 10.0
 FRAMES_BEFORE_SPEED_CHECK = 10
 WINDOW_TITLE = "Garage camera (debug) - press q to quit"
+IDLE_WAIT_MS = 5  # debug window: how long to wait for window events when no new frame has arrived
+
+KNOWN_ASPECTS = {"16:9": 16 / 9, "9:16": 9 / 16, "4:3": 4 / 3, "3:4": 3 / 4}
+
+
+def aspect_name(width: int, height: int) -> str:
+    """'16:9' for 1280x720, '4:3' for 640x480; other shapes as e.g. '1.25:1'."""
+    ratio = width / height
+    for name, value in KNOWN_ASPECTS.items():
+        if abs(ratio - value) < 0.02:
+            return name
+    return f"{ratio:.2f}:1"
 
 
 class FrameStats:
@@ -29,6 +41,7 @@ class FrameStats:
         self._speed_checked = False
         self._inference_ms_total = 0.0
         self._window_frames = 0
+        self._window_shown = 0
         self._window_inference_ms = 0.0
         self._window_start = time.monotonic()
         self._size: tuple[int, int] | None = None
@@ -37,12 +50,22 @@ class FrameStats:
         if self._size is None:
             height, width = frame.image.shape[:2]
             self._size = (width, height)
-            log.info("First frame received: %dx%d", width, height)
+            aspect = aspect_name(width, height)
+            log.info("First frame received: %dx%d (%s)", width, height, aspect)
+            if aspect not in ("16:9", "9:16"):
+                log.warning(
+                    "Video is %s, not 16:9. For a webcam, the camera may not support "
+                    "source.webcam_width x webcam_height and picked the nearest size it has.", aspect,
+                )
         self.total += 1
         self._inference_ms_total += inference_ms
         self._window_frames += 1
         self._window_inference_ms += inference_ms
         self._check_speed_once()
+
+    def add_shown(self) -> None:
+        """Count a frame drawn in the debug window."""
+        self._window_shown += 1
 
     def _check_speed_once(self) -> None:
         if self._speed_checked or self.total < FRAMES_BEFORE_SPEED_CHECK:
@@ -62,37 +85,43 @@ class FrameStats:
         if self._window_frames == 0:
             log.warning("%s: no frames in the last %.0fs", source.name, elapsed)
         else:
+            display = f", display {self._window_shown / elapsed:.1f} fps" if self._window_shown else ""
             log.info(
-                "%s: %d frames in %.0fs (%.1f fps), detection %.0f ms/frame, %s",
+                "%s: %d frames analysed in %.0fs (%.1f fps), detection %.0f ms/frame%s, %s",
                 source.name, self._window_frames, elapsed, self._window_frames / elapsed,
-                self._window_inference_ms / self._window_frames,
+                self._window_inference_ms / self._window_frames, display,
                 "healthy" if source.is_healthy else "UNHEALTHY",
             )
         self._window_frames = 0
+        self._window_shown = 0
         self._window_inference_ms = 0.0
         self._window_start = time.monotonic()
 
 
 class DebugView:
-    """A window showing each analysed frame with boxes. Clicking logs the point as
+    """A window showing the camera with the latest boxes. Clicking logs the point as
     normalized [x, y], ready to paste into detection.zone_mask."""
 
     def __init__(self) -> None:
         self._shape: tuple[int, ...] | None = None
-        cv2.namedWindow(WINDOW_TITLE, cv2.WINDOW_NORMAL)
+        # KEEPRATIO: resizing the window scales the picture instead of stretching it.
+        cv2.namedWindow(WINDOW_TITLE, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
         cv2.setMouseCallback(WINDOW_TITLE, self._on_click)
 
     def show(self, frame: Frame, detections: list[Detection], zone: Zone | None, status: str) -> None:
+        if self._shape is None:
+            height, width = frame.image.shape[:2]
+            cv2.resizeWindow(WINDOW_TITLE, width, height)  # start at the video's own proportions
         self._shape = frame.image.shape
         canvas = draw_detections(frame.image, detections, zone)
         cv2.putText(canvas, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)  # outline
         cv2.putText(canvas, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         cv2.imshow(WINDOW_TITLE, canvas)
 
-    def keep_open(self) -> bool:
-        """Process window events; False once the user pressed q or closed the window."""
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
+    def keep_open(self, wait_ms: int = 1) -> bool:
+        """Process window events for up to `wait_ms`; False once the user pressed q or closed the window."""
+        key = cv2.waitKey(wait_ms) & 0xFF
+        if key in (ord("q"), 27):  # q or Esc
             return False
         return cv2.getWindowProperty(WINDOW_TITLE, cv2.WND_PROP_VISIBLE) >= 1
 
@@ -218,15 +247,22 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
 
     st = config.storage
     storage = Storage(st.db_path, st.snapshot_dir, config.tz)
+    storage.close_unfinished_events()  # from a previous run that didn't stop cleanly
     retention = DailyRetention(storage, st.retention_days, config.tz)
     retention.run_if_due()  # on startup, then once per day
 
     ev = config.events
-    tracker = EventTracker(ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds)
+    tracker = EventTracker(
+        ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds, ev.pending_gap_seconds,
+    )
     handler = EventHandler(config.tz, snapshot_source, storage, config.camera_name)
     sampler = FpsSampler(config.detection.fps)
     stats = FrameStats(config.detection.fps)
     view = DebugView() if debug_view else None
+    # With a live debug window, show every camera frame and detect only at detection.fps,
+    # drawing the latest boxes in between. Without a window, sleep between detections to save CPU.
+    smooth_view = view is not None and source.paced
+    detections: list[Detection] = []
     started = time.monotonic()
     for s in sources:
         s.start()
@@ -236,23 +272,27 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
             if max_seconds is not None and time.monotonic() - started >= max_seconds:
                 log.info("Reached --seconds limit")
                 break
-            if source.paced:
+            if source.paced and not smooth_view:
                 sampler.wait()
             frame = source.read()
             if frame is not None:
-                detections = detector.detect(frame)
-                stats.add(frame, detector.last_inference_ms)
-                if detections:
-                    log.debug("Detected %s", describe(detections))
-                for signal in tracker.update(frame.timestamp, detections, frame.image.shape):
-                    handler.handle(signal, frame)
+                if not smooth_view or sampler.due():
+                    detections = detector.detect(frame)
+                    stats.add(frame, detector.last_inference_ms)
+                    if detections:
+                        log.debug("Detected %s", describe(detections))
+                    for signal in tracker.update(frame.timestamp, detections, frame.image.shape):
+                        handler.handle(signal, frame)
                 if view is not None:
                     view.show(frame, detections, detector.zone, tracker.describe(frame.timestamp))
+                    stats.add_shown()
             elif source.paced and not source.is_healthy:
                 # Stream is down: let time pass so an open arrival can still end.
                 for signal in tracker.update(time.time(), [], None):
                     handler.handle(signal, None)
-            if view is not None and not view.keep_open():
+                detections = []
+            wait_ms = IDLE_WAIT_MS if frame is None else 1
+            if view is not None and not view.keep_open(wait_ms):
                 log.info("Debug window closed")
                 break
             stats.maybe_log(source)

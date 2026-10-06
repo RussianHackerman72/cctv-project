@@ -284,6 +284,16 @@ class FpsSampler:
             self._next_tick = now  # fell behind (slow frame): don't try to catch up
         self._next_tick += self._interval
 
+    def due(self) -> bool:
+        """Non-blocking version of wait(): True if a tick is due now (and consumes it)."""
+        now = self._clock()
+        if self._next_tick is not None and now < self._next_tick:
+            return False
+        if self._next_tick is None or now - self._next_tick > self._interval:
+            self._next_tick = now  # first tick, or fell behind: don't try to catch up
+        self._next_tick += self._interval
+        return True
+
 
 def make_source(cfg: SourceConfig, sample_fps: float, which: str = "detect") -> FrameSource | None:
     """Build the source for detection, or the separate snapshot source.
@@ -303,7 +313,10 @@ def make_source(cfg: SourceConfig, sample_fps: float, which: str = "detect") -> 
     if which == "snapshot":
         return None
     if cfg.type == "webcam":
-        return LiveSource(f"webcam #{cfg.webcam_index}", lambda: _open_webcam(cfg.webcam_index))
+        return LiveSource(
+            f"webcam #{cfg.webcam_index}",
+            lambda: _open_webcam(cfg.webcam_index, cfg.webcam_width, cfg.webcam_height),
+        )
     return FileSource(cfg.file_path, realtime=cfg.file_realtime, sample_fps=sample_fps)
 
 
@@ -312,7 +325,14 @@ def _open_rtsp(url: str) -> cv2.VideoCapture:
     return cv2.VideoCapture(url, cv2.CAP_FFMPEG, params)
 
 
-def _open_webcam(index: int) -> cv2.VideoCapture:
+def _open_webcam(index: int, width: int, height: int) -> cv2.VideoCapture:
     # On Windows, DirectShow opens webcams much faster than the default (Media Foundation).
     backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
-    return cv2.VideoCapture(index, backend)
+    capture = cv2.VideoCapture(index, backend)
+    if capture.isOpened():
+        # Without asking, DirectShow gives 640x480 (4:3). MJPG first: uncompressed 720p
+        # usually runs at only ~10 fps over USB, MJPG at the full 30.
+        capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    return capture

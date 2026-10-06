@@ -81,6 +81,8 @@ def source_config(**overrides) -> SourceConfig:
         detect_url="rtsp://cam:s3cret@10.0.0.5:554/stream2",
         snapshot_url="rtsp://cam:s3cret@10.0.0.5:554/stream2",
         webcam_index=0,
+        webcam_width=1280,
+        webcam_height=720,
         file_path=Path("clips/test.mp4"),
         file_realtime=True,
     )
@@ -109,6 +111,25 @@ def test_sampler_paces_and_does_not_burst_after_falling_behind():
     sampler.wait()                      # behind: don't sleep...
     sampler.wait()                      # ...and the next one is a full interval later, not instant
     assert clock.sleep_calls[1:] == [pytest.approx(0.5)]
+
+
+def test_sampler_due_never_blocks_and_does_not_burst():
+    clock = FakeClock()
+    sampler = FpsSampler(2, clock=clock, sleep=clock.sleep)  # every 0.5 s
+
+    assert sampler.due()                # first call: due at once
+    clock.now = 0.3
+    assert not sampler.due()            # next tick at 0.5
+    clock.now = 0.5
+    assert sampler.due()
+    assert not sampler.due()            # each tick is used only once
+
+    clock.now = 5.0                     # a long pause
+    assert sampler.due()
+    assert not sampler.due()            # no burst of missed ticks
+    clock.now = 5.5
+    assert sampler.due()
+    assert clock.sleep_calls == []
 
 
 # --- file source -------------------------------------------------------------------

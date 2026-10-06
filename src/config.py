@@ -32,6 +32,8 @@ class SourceConfig:
     detect_url: str
     snapshot_url: str
     webcam_index: int
+    webcam_width: int   # requested size; the webcam may pick the nearest one it supports
+    webcam_height: int
     file_path: Path
     file_realtime: bool
 
@@ -49,6 +51,7 @@ class EventsConfig:
     min_presence_seconds: float
     end_after_seconds: float
     cooldown_seconds: float
+    pending_gap_seconds: float
 
 
 @dataclass(frozen=True)
@@ -131,6 +134,8 @@ def parse_config(raw: object, base_dir: Path, env: Mapping[str, str]) -> Config:
             detect_url=expand_placeholders(_text(source, "source", "detect_url"), env),
             snapshot_url=expand_placeholders(_text(source, "source", "snapshot_url"), env),
             webcam_index=int(_number(source, "source", "webcam_index", at_least=0, whole=True)),
+            webcam_width=int(_number(source, "source", "webcam_width", at_least=1, whole=True)),
+            webcam_height=int(_number(source, "source", "webcam_height", at_least=1, whole=True)),
             file_path=resolve(_text(source, "source", "file_path")),
             file_realtime=_flag(source, "source", "file_realtime"),
         ),
@@ -144,6 +149,7 @@ def parse_config(raw: object, base_dir: Path, env: Mapping[str, str]) -> Config:
             min_presence_seconds=float(_number(events, "events", "min_presence_seconds", at_least=0)),
             end_after_seconds=float(_number(events, "events", "end_after_seconds", above=0)),
             cooldown_seconds=float(_number(events, "events", "cooldown_seconds", at_least=0)),
+            pending_gap_seconds=float(_number(events, "events", "pending_gap_seconds", at_least=0)),
         ),
         storage=StorageConfig(
             db_path=resolve(_text(storage, "storage", "db_path")),

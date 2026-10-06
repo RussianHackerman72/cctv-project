@@ -5,7 +5,7 @@ detections; it returns signals saying what happened. That makes every rule
 below easy to unit test with made-up timelines.
 
     IDLE ──person──▶ PENDING ──present for min_presence──▶ ACTIVE
-      ▲                 │ (any frame without a person)        │ (no person for end_after)
+      ▲                 │ (no person for over pending_gap)    │ (no person for end_after)
       └─────────────────┘                                     ▼
       ◀──────────────── cooldown_seconds pass ─────────── COOLDOWN
 """
@@ -64,10 +64,18 @@ def frame_score(detections: Sequence[Detection], frame_shape: Sequence[int]) -> 
 
 
 class EventTracker:
-    def __init__(self, min_presence_seconds: float, end_after_seconds: float, cooldown_seconds: float):
+    def __init__(
+        self,
+        min_presence_seconds: float,
+        end_after_seconds: float,
+        cooldown_seconds: float,
+        pending_gap_seconds: float = 0.0,
+    ):
         self.min_presence = min_presence_seconds
         self.end_after = end_after_seconds
         self.cooldown = cooldown_seconds
+        # While PENDING, a miss this short (e.g. one frame the detector got wrong) is forgiven.
+        self.pending_gap = pending_gap_seconds
 
         self.state = State.IDLE
         self._next_key = 1
@@ -129,7 +137,8 @@ class EventTracker:
 
     def _update_pending(self, timestamp, detections, frame_shape) -> list[Signal]:
         if not detections:
-            self.state = State.IDLE  # flicker: presence must be continuous to count
+            if timestamp - self._last_seen > self.pending_gap:
+                self.state = State.IDLE  # flicker: presence must be (nearly) continuous to count
             return []
         signals = self._track(timestamp, detections, frame_shape)
         if timestamp - self._first_seen >= self.min_presence:
