@@ -42,7 +42,8 @@ If the webcam doesn't support that size, it picks the nearest one, and the log s
 
 Per-frame detections are turned into one **arrival** per visit (`src/events.py`, settings under `events:`):
 
-1. A person must be seen in every analysed frame for `min_presence_seconds` (1.5 s). Shorter sightings are ignored.
+1. A person must be seen for `min_presence_seconds` (1.5 s). Shorter sightings are ignored.
+   Misses up to `pending_gap_seconds` (0.5 s), such as a frame or two the detector got wrong, don't reset the count.
 2. The arrival lasts while they're around. Short gaps under `end_after_seconds` (8 s) don't split it.
 3. It ends after `end_after_seconds` with nobody in view.
 4. For `cooldown_seconds` (60 s) after that, new arrivals are ignored, so someone stepping back out doesn't trigger a second alert.
@@ -59,6 +60,9 @@ Per-frame detections are logged only at `logging.level: DEBUG`.
   then replaced if a better frame turns up before it ends.
 - **Retention:** snapshots older than `storage.retention_days` (14) are deleted on startup and once a day.
   The event rows and labels are kept, so the statistics survive.
+- **Unclean shutdown:** if the app is killed during an arrival, that event has no end time. On the next start it is closed
+  at the time its snapshot was last saved (or its start time), and the log lists which events were closed.
+  To stop cleanly, press Ctrl+C, or `q`/Esc in the debug window.
 
 ## Watch zone (optional)
 

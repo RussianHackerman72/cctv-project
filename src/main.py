@@ -45,8 +45,8 @@ def log_config_summary(config: Config) -> None:
     log.info("Source: %s", where)
     log.info("Detection: %s at %g fps, min confidence %.2f, %s", det.model.name, det.fps, det.min_confidence, zone)
     log.info(
-        "Events: start after %gs, end after %gs, cooldown %gs",
-        ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds,
+        "Events: start after %gs (gaps up to %gs forgiven), end after %gs, cooldown %gs",
+        ev.min_presence_seconds, ev.pending_gap_seconds, ev.end_after_seconds, ev.cooldown_seconds,
     )
     log.info("Storage: %s, snapshots in %s, kept %d days", st.db_path, st.snapshot_dir, st.retention_days)
     log.info("Telegram: %s", telegram)

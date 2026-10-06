@@ -79,6 +79,29 @@ class Storage:
     def finish_event(self, event_id: int, ended_at: float, max_confidence: float) -> None:
         self._update(event_id, ended_at=self.iso(ended_at), max_confidence=round(max_confidence, 4))
 
+    def close_unfinished_events(self) -> int:
+        """Give events left open by a crash or forced stop an end time; returns how many.
+
+        The end is when the event's snapshot was last saved (a moment the person was
+        really there), or the start if there is no snapshot.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, started_at, snapshot_path FROM events WHERE ended_at IS NULL"
+            ).fetchall()
+        for row in rows:
+            ended_at = row["started_at"]
+            path = self.snapshot_dir / row["snapshot_path"] if row["snapshot_path"] else None
+            if path is not None and path.exists():
+                ended_at = self.iso(path.stat().st_mtime)
+            self._update(row["id"], ended_at=ended_at)
+        if rows:
+            log.warning(
+                "Closed %d event(s) left open by an unclean shutdown: %s",
+                len(rows), ", ".join(str(row["id"]) for row in rows),
+            )
+        return len(rows)
+
     def save_snapshot(self, event_id: int, image: np.ndarray) -> Path:
         """Write the event's snapshot (replacing any earlier one) and return its full path."""
         event = self.get_event(event_id)

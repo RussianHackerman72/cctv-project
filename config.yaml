@@ -25,6 +25,7 @@ events:
   min_presence_seconds: 1.5   # person must persist this long to start an event
   end_after_seconds: 8        # event ends after this long with no person
   cooldown_seconds: 60        # ignore re-triggers right after an event
+  pending_gap_seconds: 0.5    # before the start, misses up to this long don't reset the count
 
 storage:
   db_path: data/events.db

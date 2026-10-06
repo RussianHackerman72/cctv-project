@@ -51,6 +51,7 @@ class EventsConfig:
     min_presence_seconds: float
     end_after_seconds: float
     cooldown_seconds: float
+    pending_gap_seconds: float
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,7 @@ def parse_config(raw: object, base_dir: Path, env: Mapping[str, str]) -> Config:
             min_presence_seconds=float(_number(events, "events", "min_presence_seconds", at_least=0)),
             end_after_seconds=float(_number(events, "events", "end_after_seconds", above=0)),
             cooldown_seconds=float(_number(events, "events", "cooldown_seconds", at_least=0)),
+            pending_gap_seconds=float(_number(events, "events", "pending_gap_seconds", at_least=0)),
         ),
         storage=StorageConfig(
             db_path=resolve(_text(storage, "storage", "db_path")),

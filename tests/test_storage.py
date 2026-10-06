@@ -76,6 +76,21 @@ def test_snapshot_is_saved_and_replaced(storage):
     assert storage.snapshot_file(storage.get_event(event_id)) == first
 
 
+def test_close_unfinished_events(storage):
+    finished = storage.create_event("garage", NOW)
+    storage.finish_event(finished, NOW + 12, 0.9)
+    with_snapshot = storage.create_event("garage", NOW + 100)
+    path = storage.save_snapshot(with_snapshot, image())
+    os.utime(path, (NOW + 130, NOW + 130))  # snapshot last saved 30 s into the event
+    without_snapshot = storage.create_event("garage", NOW + 200)
+
+    assert storage.close_unfinished_events() == 2
+    assert storage.get_event(finished)["ended_at"] == storage.iso(NOW + 12)  # untouched
+    assert storage.get_event(with_snapshot)["ended_at"] == storage.iso(NOW + 130)
+    assert storage.get_event(without_snapshot)["ended_at"] == storage.iso(NOW + 200)
+    assert storage.close_unfinished_events() == 0
+
+
 def test_telegram_message_marks_notified(storage):
     event_id = storage.create_event("garage", NOW)
     storage.set_telegram_message(event_id, 4242)

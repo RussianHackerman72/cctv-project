@@ -247,11 +247,14 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
 
     st = config.storage
     storage = Storage(st.db_path, st.snapshot_dir, config.tz)
+    storage.close_unfinished_events()  # from a previous run that didn't stop cleanly
     retention = DailyRetention(storage, st.retention_days, config.tz)
     retention.run_if_due()  # on startup, then once per day
 
     ev = config.events
-    tracker = EventTracker(ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds)
+    tracker = EventTracker(
+        ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds, ev.pending_gap_seconds,
+    )
     handler = EventHandler(config.tz, snapshot_source, storage, config.camera_name)
     sampler = FpsSampler(config.detection.fps)
     stats = FrameStats(config.detection.fps)
