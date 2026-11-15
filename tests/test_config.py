@@ -134,3 +134,16 @@ def test_secrets_parse_and_token_stays_out_of_repr(raw):
 def test_bad_chat_id_raises(raw):
     with pytest.raises(ConfigError, match="TELEGRAM_CHAT_ID"):
         parse(raw, env={"TELEGRAM_CHAT_ID": "my-chat"})
+
+
+def test_entry_zone_parses_and_is_optional(raw):
+    raw["events"]["entry_zone"] = [[0.5, 0.4], [1, 0.4], [1, 0.7]]
+    assert parse(raw).events.entry_zone == ((0.5, 0.4), (1.0, 0.4), (1.0, 0.7))
+    del raw["events"]["entry_zone"]
+    assert parse(raw).events.entry_zone is None
+
+
+def test_bad_entry_zone_raises(raw):
+    raw["events"]["entry_zone"] = [[0.5, 0.4], [2, 0.4], [1, 0.7]]
+    with pytest.raises(ConfigError, match="entry_zone"):
+        parse(raw)

@@ -5,7 +5,7 @@ presence, ends after 8 s with nobody, then new starts are ignored for 60 s.
 """
 import pytest
 
-from src.detector import Detection
+from src.detector import Detection, Zone
 from src.events import BestImproved, EventEnded, EventStarted, EventTracker, State
 
 FPS = 3
@@ -176,4 +176,85 @@ def test_describe_shows_state():
     t.update(2, [person()], SHAPE)
     assert t.describe(2).startswith("ACTIVE #")
     t.update(11, [], None)
-    assert t.describe(21) == "COOLDOWN 50s"
+    assert t.describe(21) == "COOLDOWN 49s"   # ended at 2 + 8 s, cooldown to 70 s
+
+
+# --- entry zone: arrivals must start on the street side ---------------------------------
+
+STREET = Zone([(0.5, 0.0), (1.0, 0.0), (1.0, 0.5), (0.5, 0.5)])  # top right of the frame
+
+
+def on_street() -> Detection:
+    return Detection((400, 100, 450, 200), 0.8, 0.0)   # feet at y=200, inside the street zone
+
+
+def in_garage() -> Detection:
+    return Detection((100, 300, 200, 450), 0.8, 0.0)   # feet at y=450, inside the garage
+
+
+def test_people_inside_never_start_an_arrival():
+    signals = run(tracker(entry_zone=STREET), timeline((0, 600, [in_garage()])))
+    assert of_type(signals, EventStarted) == []
+
+
+def test_arrival_from_the_street():
+    signals = run(tracker(entry_zone=STREET), timeline((0, 5, [on_street()])))
+    assert len(of_type(signals, EventStarted)) == 1
+
+
+def test_courier_walking_in_stays_one_arrival():
+    signals = run(tracker(entry_zone=STREET), timeline((0, 5, [on_street()]), (5, 30, [in_garage()])))
+    [started] = of_type(signals, EventStarted)
+    [ended] = of_type(signals, EventEnded)
+    assert started.started_at == 0
+    assert ended.ended_at == pytest.approx(30 - 1 / 3)  # kept going while they were inside
+
+
+def test_courier_arrives_while_family_is_inside():
+    signals = run(
+        tracker(entry_zone=STREET),
+        timeline((0, 100, [in_garage()]), (100, 110, [in_garage(), on_street()]), (110, 120, [in_garage()])),
+    )
+    [started] = of_type(signals, EventStarted)
+    assert started.started_at == pytest.approx(100)
+
+
+def test_brief_passer_by_with_family_inside_is_ignored():
+    # Someone inside keeps a person in view, but the street person is only there for 1 s.
+    signals = run(
+        tracker(entry_zone=STREET),
+        timeline((0, 50, [in_garage()]), (50, 51, [in_garage(), on_street()]), (51, 100, [in_garage()])),
+    )
+    assert of_type(signals, EventStarted) == []
+
+
+def test_foot_point():
+    assert Detection((10, 20, 30, 80), 0.9, 0.0).foot == (20, 80)
+
+
+def test_grace_bridges_missed_detections_while_pending():
+    # On the street for 10 s, but the detector misses them every 4th frame.
+    flicker = [(i / FPS, i / FPS + 1 / FPS, [on_street()]) for i in range(30) if i % 4 != 3]
+    assert of_type(run(tracker(min_presence_seconds=5, entry_zone=STREET), timeline(*flicker)), EventStarted) == []
+    signals = run(tracker(min_presence_seconds=5, entry_zone=STREET, pending_grace_seconds=1), timeline(*flicker))
+    [started] = of_type(signals, EventStarted)
+    assert started.started_at == 0
+
+
+def test_grace_does_not_bridge_long_absences():
+    # Two 3-second sightings 2 s apart: neither reaches 5 s, and the gap is longer than the grace.
+    signals = run(
+        tracker(min_presence_seconds=5, entry_zone=STREET, pending_grace_seconds=1),
+        timeline((0, 3, [on_street()]), (5, 8, [on_street()])),
+    )
+    assert of_type(signals, EventStarted) == []
+
+
+def test_cooldown_counts_from_the_end_not_from_a_late_frame():
+    # The event's last sighting is at 5 s, then the footage stops (an outage) until 1000 s.
+    # Its cooldown ran out long ago, so someone seen right after the gap starts a new arrival.
+    t = tracker()
+    signals = run(t, ((i / FPS, [person()]) for i in range(16)))   # footage stops while ACTIVE
+    signals += t.update(1000, [], None)                    # first frame after the gap
+    signals += run(t, ((1000 + i / FPS, [person()]) for i in range(1, 10)))
+    assert len(of_type(signals, EventStarted)) == 2

@@ -98,6 +98,23 @@ def test_detector_ignores_people_outside_zone():
     assert [d.center for d in detections] == [(320, 380)]
 
 
+def test_detect_classes_returns_motorcycles_and_ignores_zone():
+    from src.detector import MOTORCYCLE_CLASS
+
+    model = FakeModel([
+        (300, 50, 340, 150, 0.9, PERSON_CLASS),        # outside LOWER_HALF
+        (100, 300, 300, 460, 0.8, MOTORCYCLE_CLASS),
+        (10, 20, 110, 220, 0.95, CAR),                  # not asked for
+    ])
+    detector = PersonDetector(model, min_confidence=0.5, zone=LOWER_HALF)
+    found = detector.detect_classes(frame(), (PERSON_CLASS, MOTORCYCLE_CLASS))
+
+    assert len(found[PERSON_CLASS]) == 1          # kept even though it's outside the zone
+    assert len(found[MOTORCYCLE_CLASS]) == 1
+    assert model.calls[0]["classes"] == [PERSON_CLASS, MOTORCYCLE_CLASS]
+    assert detector.detect(frame()) == []         # detect() still applies the zone
+
+
 def test_detector_handles_no_detections():
     assert PersonDetector(FakeModel([]), min_confidence=0.5).detect(frame()) == []
 

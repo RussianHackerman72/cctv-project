@@ -5,9 +5,14 @@ detections; it returns signals saying what happened. That makes every rule
 below easy to unit test with made-up timelines.
 
     IDLE ──person──▶ PENDING ──present for min_presence──▶ ACTIVE
-      ▲                 │ (any frame without a person)        │ (no person for end_after)
+      ▲                 │ (nobody for over pending_grace)     │ (no person for end_after)
       └─────────────────┘                                     ▼
       ◀──────────────── cooldown_seconds pass ─────────── COOLDOWN
+
+With an entry zone (the street side), only people standing in it can start an
+arrival, and they must stay in it for min_presence. Once an arrival is ACTIVE,
+anyone anywhere keeps it going, e.g. family walking out to meet a courier.
+People who appear inside the garage (family, helpers, kids) never start one.
 """
 from __future__ import annotations
 
@@ -15,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
-from src.detector import Detection
+from src.detector import Detection, Zone
 
 
 class State(Enum):
@@ -64,10 +69,19 @@ def frame_score(detections: Sequence[Detection], frame_shape: Sequence[int]) -> 
 
 
 class EventTracker:
-    def __init__(self, min_presence_seconds: float, end_after_seconds: float, cooldown_seconds: float):
+    def __init__(
+        self,
+        min_presence_seconds: float,
+        end_after_seconds: float,
+        cooldown_seconds: float,
+        entry_zone: Zone | None = None,
+        pending_grace_seconds: float = 0.0,
+    ):
         self.min_presence = min_presence_seconds
         self.end_after = end_after_seconds
         self.cooldown = cooldown_seconds
+        self.entry_zone = entry_zone
+        self.pending_grace = pending_grace_seconds  # dropouts this short don't reset a pending arrival
 
         self.state = State.IDLE
         self._next_key = 1
@@ -89,9 +103,10 @@ class EventTracker:
             self.state = State.IDLE  # cooldown over: treat this frame as a fresh start
 
         if self.state is State.IDLE:
-            return self._start_pending(timestamp, detections, frame_shape) if detections else []
+            entering = self._entering(detections, frame_shape)
+            return self._start_pending(timestamp, entering, frame_shape) if entering else []
         if self.state is State.PENDING:
-            return self._update_pending(timestamp, detections, frame_shape)
+            return self._update_pending(timestamp, self._entering(detections, frame_shape), frame_shape)
         return self._update_active(timestamp, detections, frame_shape)
 
     def finish(self) -> list[Signal]:
@@ -129,7 +144,9 @@ class EventTracker:
 
     def _update_pending(self, timestamp, detections, frame_shape) -> list[Signal]:
         if not detections:
-            self.state = State.IDLE  # flicker: presence must be continuous to count
+            # The detector often misses someone for a frame or two; only a longer absence resets.
+            if timestamp - self._last_seen > self.pending_grace:
+                self.state = State.IDLE
             return []
         signals = self._track(timestamp, detections, frame_shape)
         if timestamp - self._first_seen >= self.min_presence:
@@ -141,11 +158,19 @@ class EventTracker:
             return self._track(timestamp, detections, frame_shape)
         if timestamp - self._last_seen >= self.end_after:
             self.state = State.COOLDOWN
-            self._cooldown_until = timestamp + self.cooldown
+            # Count the cooldown from when the event really ended, not from this frame: after a gap
+            # in the footage (a stream outage, or the next clip of a replay) they can be hours apart.
+            self._cooldown_until = self._last_seen + self.end_after + self.cooldown
             return [self._ended()]
         return []
 
     # --- helpers -------------------------------------------------------------------
+
+    def _entering(self, detections, frame_shape) -> list[Detection]:
+        """The people who can start an arrival: everyone, or with an entry zone, those standing in it."""
+        if self.entry_zone is None or not detections:
+            return list(detections)
+        return [d for d in detections if self.entry_zone.contains(d.foot, frame_shape)]
 
     def _track(self, timestamp, detections, frame_shape) -> list[Signal]:
         self._last_seen = timestamp

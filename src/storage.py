@@ -105,6 +105,28 @@ class Storage:
             raise StorageError(f"No event with id {event_id}")
         return row
 
+    def all_events(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._db.execute("SELECT * FROM events ORDER BY id").fetchall()
+
+    def delete_events_after(self, timestamp: float) -> int:
+        """Delete events that started after `timestamp`, with their snapshots. Returns how many.
+
+        Used when resuming an interrupted replay: those events will be found again.
+        """
+        cutoff = datetime.fromtimestamp(timestamp, self._tz)
+        doomed = [row for row in self.all_events() if datetime.fromisoformat(row["started_at"]) > cutoff]
+        for row in doomed:
+            if row["snapshot_path"]:
+                _delete_file(self.snapshot_dir / row["snapshot_path"])
+            with self._lock, self._db:
+                self._db.execute("DELETE FROM events WHERE id = ?", (row["id"],))
+        return len(doomed)
+
+    def count_events(self) -> int:
+        with self._lock:
+            return self._db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+
     def snapshot_file(self, event: sqlite3.Row) -> Path | None:
         return self.snapshot_dir / event["snapshot_path"] if event["snapshot_path"] else None
 

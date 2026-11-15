@@ -38,6 +38,8 @@ def log_config_summary(config: Config) -> None:
 
     det, ev, st = config.detection, config.events, config.storage
     zone = f"{len(det.zone_mask)}-point zone" if det.zone_mask else "whole frame"
+    if ev.entry_zone:
+        zone += ", arrivals must start in the entry zone"
     secrets = config.secrets
     telegram = "configured" if secrets.telegram_bot_token and secrets.telegram_chat_id else "not configured yet"
 

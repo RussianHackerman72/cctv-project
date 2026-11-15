@@ -35,10 +35,15 @@ Ultralytics' anonymous usage statistics are switched off automatically, so the p
 
 Per-frame detections are turned into one **arrival** per visit (`src/events.py`, settings under `events:`):
 
-1. A person must be seen in every analysed frame for `min_presence_seconds` (1.5 s). Shorter sightings are ignored.
-2. The arrival lasts while they're around. Short gaps under `end_after_seconds` (8 s) don't split it.
+1. A person must be seen **in the entry zone** (the street side, see below) in every analysed frame for
+   `min_presence_seconds` (5 s). Shorter sightings, such as people walking past, are ignored.
+   People who appear inside the garage (family, helpers, kids) never start an arrival.
+2. Once it has started, anyone anywhere keeps it going, e.g. someone walking out to meet a courier.
+   Short gaps under `end_after_seconds` (30 s) don't split it.
 3. It ends after `end_after_seconds` with nobody in view.
-4. For `cooldown_seconds` (60 s) after that, new arrivals are ignored, so someone stepping back out doesn't trigger a second alert.
+4. For `cooldown_seconds` (300 s) after that, new arrivals are ignored, so someone stepping back out doesn't trigger a second alert.
+
+These values were tuned on a full day of SD-card footage (2026-11-10), see "Tuning the rules" below.
 
 During an arrival, the best snapshot frame is kept: the largest, most confident view of the person.
 The debug window shows the current state in the top-left corner (`IDLE`, `PENDING 0.7s`, `ACTIVE #3`, `COOLDOWN 42s`).
@@ -52,6 +57,67 @@ Per-frame detections are logged only at `logging.level: DEBUG`.
   then replaced if a better frame turns up before it ends.
 - **Retention:** snapshots older than `storage.retention_days` (14) are deleted on startup and once a day.
   The event rows and labels are kept, so the statistics survive.
+
+## Replaying recorded footage
+
+`src/replay.py` runs recorded clips through the same detection and arrival logic, much faster than real time.
+It reads the YI camera's SD-card layout (`record/2026Y11M10D03H/05M00S.mp4`) and analyses the small 640x360 stream.
+
+```powershell
+python -m src.replay E:\record --date 2026-11-10 --list                    # just count the clips for that day
+python -m src.replay E:\record --date 2026-11-10                           # the whole day (local time)
+python -m src.replay E:\record --date 2026-11-10 --from 07:00 --to 21:00   # part of a day
+```
+
+- Dates and times are local (`utc_offset` in `config.yaml`). The camera names its folders in UTC, so `--camera-utc-offset` defaults to `+00:00`.
+- Frames are analysed at `detection.fps` unless `--fps` is given. The event rules come from `config.yaml` too.
+- Results go to `data/replay/<date>/`: `events.db`, `events.csv` (one row per arrival), `snapshots/`,
+  and `heatmap.jpg`, a daytime frame marked with every detection. Red dots were part of an arrival; yellow dots were people
+  seen who never became one, such as passers-by. Use it to decide where the watch zone should go.
+- Ctrl+C stops early and still saves what was found. A rerun refuses to overwrite an existing results folder.
+- The camera only records some of the time, so gaps between clips are normal. They're logged and handled.
+
+## Tuning the rules
+
+Replays also save `detections.jsonl`: every analysed frame's people (with clothing colours) and motorcycles.
+`src/tune.py` re-runs the arrival rules on it in seconds, so settings can be tried without re-analysing hours of video:
+
+```powershell
+python -m src.tune data\replay\2026-11-10                                 # rules from config.yaml
+python -m src.tune data\replay\2026-11-10 --cooldown 600 --end-after 60   # try other values
+python -m src.tune data\replay\2026-11-10 --entry-zone none --from 18:00 --list
+```
+
+`--resume` on `src.replay` continues a run that was interrupted (crash, Ctrl+C, laptop sleep).
+
+### Checking against labelled footage
+
+`data\labels\deliveries.csv` lists hand-labelled moments (columns `start_local,end_local,clip,clip_found,kind,note`;
+kind is `delivery`, `mock`, `neighbour` or `passing`). Replay just those moments, then score the rules:
+
+```powershell
+python -m src.replay E:\record --labels data\labels\deliveries.csv
+python -m src.evaluate data\replay\deliveries --labels data\labels\deliveries.csv --grace 0 --min-presence 3
+```
+
+An arrival counts for a moment if it started during it or up to a minute before. The report also shows how long
+someone stood in the entry zone, how long a motorbike was in view, and clothing colours per kind.
+
+### Demo videos
+
+`src.demo` renders snippets with the detections, zones and live stats drawn on, as an MP4:
+
+```powershell
+python -m src.demo E:\record --date 2026-11-10 --auto data\replay\2026-11-10-v2 --from 18:00
+python -m src.demo E:\record --labels data\labels\deliveries.csv --kind delivery --kind mock
+```
+
+## Entry zone
+
+`events.entry_zone` is where arrivals must start: the street beyond the gate. A person is "in" it when their
+**feet** (the bottom middle of their box) are inside, which shows where they stand better than the box centre.
+It is drawn in blue in the debug window. If the camera is re-aimed, redraw it: run with `--debug-view`,
+click the corners of the street area and paste the points into `config.yaml`. `null` switches it off.
 
 ## Watch zone (optional)
 

@@ -76,6 +76,26 @@ def test_snapshot_is_saved_and_replaced(storage):
     assert storage.snapshot_file(storage.get_event(event_id)) == first
 
 
+def test_count_and_list_events(storage):
+    assert storage.count_events() == 0 and storage.all_events() == []
+    first = storage.create_event("garage", NOW)
+    second = storage.create_event("garage", NOW + 60)
+    assert storage.count_events() == 2
+    assert [row["id"] for row in storage.all_events()] == [first, second]
+
+
+def test_delete_events_after(storage):
+    keep = storage.create_event("garage", NOW)
+    kept_snapshot = storage.save_snapshot(keep, image())
+    drop = storage.create_event("garage", NOW + 30)
+    dropped_snapshot = storage.save_snapshot(drop, image())
+
+    assert storage.delete_events_after(NOW + 10) == 1
+    assert [row["id"] for row in storage.all_events()] == [keep]
+    assert kept_snapshot.exists() and not dropped_snapshot.exists()
+    assert storage.delete_events_after(NOW + 10) == 0
+
+
 def test_telegram_message_marks_notified(storage):
     event_id = storage.create_event("garage", NOW)
     storage.set_telegram_message(event_id, 4242)

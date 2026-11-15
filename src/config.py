@@ -49,6 +49,8 @@ class EventsConfig:
     min_presence_seconds: float
     end_after_seconds: float
     cooldown_seconds: float
+    entry_zone: tuple[tuple[float, float], ...] | None  # arrivals must start here (the street side)
+    pending_grace_seconds: float = 0.0  # missed detections this short don't reset a pending arrival
 
 
 @dataclass(frozen=True)
@@ -125,7 +127,7 @@ def parse_config(raw: object, base_dir: Path, env: Mapping[str, str]) -> Config:
 
     return Config(
         camera_name=_text(raw, "config", "camera_name"),
-        tz=_parse_utc_offset(_value(raw, "config", "utc_offset")),
+        tz=parse_utc_offset(_value(raw, "config", "utc_offset")),
         source=SourceConfig(
             type=source_type,
             detect_url=expand_placeholders(_text(source, "source", "detect_url"), env),
@@ -138,12 +140,15 @@ def parse_config(raw: object, base_dir: Path, env: Mapping[str, str]) -> Config:
             model=resolve(_text(detection, "detection", "model")),
             fps=float(_number(detection, "detection", "fps", above=0)),
             min_confidence=float(_number(detection, "detection", "min_confidence", above=0, at_most=1)),
-            zone_mask=_parse_zone(_value(detection, "detection", "zone_mask")),
+            zone_mask=_parse_zone(_value(detection, "detection", "zone_mask"), "detection.zone_mask"),
         ),
         events=EventsConfig(
             min_presence_seconds=float(_number(events, "events", "min_presence_seconds", at_least=0)),
             end_after_seconds=float(_number(events, "events", "end_after_seconds", above=0)),
             cooldown_seconds=float(_number(events, "events", "cooldown_seconds", at_least=0)),
+            entry_zone=_parse_zone(events.get("entry_zone"), "events.entry_zone"),
+            pending_grace_seconds=float(_number(events, "events", "pending_grace_seconds", at_least=0))
+            if "pending_grace_seconds" in events else 0.0,
         ),
         storage=StorageConfig(
             db_path=resolve(_text(storage, "storage", "db_path")),
@@ -223,7 +228,7 @@ def _number(
     return value
 
 
-def _parse_utc_offset(value: object) -> timezone:
+def parse_utc_offset(value: object) -> timezone:
     # Unquoted +07:00 is read by YAML as a base-60 number, hence the hint about quotes.
     match = _UTC_OFFSET.match(value) if isinstance(value, str) else None
     if not match:
@@ -233,16 +238,16 @@ def _parse_utc_offset(value: object) -> timezone:
     return timezone(-offset if sign == "-" else offset)
 
 
-def _parse_zone(value: object) -> tuple[tuple[float, float], ...] | None:
+def _parse_zone(value: object, name: str) -> tuple[tuple[float, float], ...] | None:
     if value is None:
         return None
     if not isinstance(value, list) or len(value) < 3:
-        raise ConfigError("'detection.zone_mask' must be null or a list of at least 3 [x, y] points")
+        raise ConfigError(f"'{name}' must be null or a list of at least 3 [x, y] points")
     points = []
     for point in value:
         is_pair = isinstance(point, list) and len(point) == 2
         if not is_pair or not all(_is_fraction(c) for c in point):
-            raise ConfigError(f"zone_mask point {point!r} must be [x, y] with values from 0 to 1")
+            raise ConfigError(f"{name} point {point!r} must be [x, y] with values from 0 to 1")
         points.append((float(point[0]), float(point[1])))
     return tuple(points)
 

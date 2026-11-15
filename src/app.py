@@ -75,16 +75,18 @@ class FrameStats:
 
 class DebugView:
     """A window showing each analysed frame with boxes. Clicking logs the point as
-    normalized [x, y], ready to paste into detection.zone_mask."""
+    normalized [x, y], ready to paste into events.entry_zone or detection.zone_mask."""
 
     def __init__(self) -> None:
         self._shape: tuple[int, ...] | None = None
         cv2.namedWindow(WINDOW_TITLE, cv2.WINDOW_NORMAL)
         cv2.setMouseCallback(WINDOW_TITLE, self._on_click)
 
-    def show(self, frame: Frame, detections: list[Detection], zone: Zone | None, status: str) -> None:
+    def show(
+        self, frame: Frame, detections: list[Detection], zone: Zone | None, entry_zone: Zone | None, status: str
+    ) -> None:
         self._shape = frame.image.shape
-        canvas = draw_detections(frame.image, detections, zone)
+        canvas = draw_detections(frame.image, detections, zone, entry_zone)
         cv2.putText(canvas, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)  # outline
         cv2.putText(canvas, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         cv2.imshow(WINDOW_TITLE, canvas)
@@ -102,7 +104,7 @@ class DebugView:
     def _on_click(self, event: int, x: int, y: int, _flags: int, _param: object) -> None:
         if event == cv2.EVENT_LBUTTONDOWN and self._shape is not None:
             height, width = self._shape[:2]
-            log.info("Clicked at [%.3f, %.3f] (normalized, for zone_mask)", x / width, y / height)
+            log.info("Clicked at [%.3f, %.3f] (normalized, for zone settings)", x / width, y / height)
 
 
 class EventHandler:
@@ -222,7 +224,10 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
     retention.run_if_due()  # on startup, then once per day
 
     ev = config.events
-    tracker = EventTracker(ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds)
+    entry_zone = Zone(ev.entry_zone) if ev.entry_zone else None
+    tracker = EventTracker(
+        ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds, entry_zone, ev.pending_grace_seconds
+    )
     handler = EventHandler(config.tz, snapshot_source, storage, config.camera_name)
     sampler = FpsSampler(config.detection.fps)
     stats = FrameStats(config.detection.fps)
@@ -247,7 +252,7 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
                 for signal in tracker.update(frame.timestamp, detections, frame.image.shape):
                     handler.handle(signal, frame)
                 if view is not None:
-                    view.show(frame, detections, detector.zone, tracker.describe(frame.timestamp))
+                    view.show(frame, detections, detector.zone, entry_zone, tracker.describe(frame.timestamp))
             elif source.paced and not source.is_healthy:
                 # Stream is down: let time pass so an open arrival can still end.
                 for signal in tracker.update(time.time(), [], None):

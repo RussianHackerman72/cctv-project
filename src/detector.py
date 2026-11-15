@@ -20,6 +20,7 @@ from src.sources import Frame  # noqa: E402
 log = logging.getLogger("detector")
 
 PERSON_CLASS = 0  # "person" in the COCO classes YOLO is trained on
+MOTORCYCLE_CLASS = 3
 IMAGE_SIZE = 640  # YOLO's input size; frames are scaled to this internally
 
 
@@ -33,6 +34,12 @@ class Detection:
     def center(self) -> tuple[float, float]:
         x1, y1, x2, y2 = self.box
         return ((x1 + x2) / 2, (y1 + y2) / 2)
+
+    @property
+    def foot(self) -> tuple[float, float]:
+        """Bottom middle of the box: roughly where the person is standing."""
+        x1, _, x2, y2 = self.box
+        return ((x1 + x2) / 2, y2)
 
     def area_fraction(self, frame_shape: Sequence[int]) -> float:
         """Share of the frame the box covers (0..1); bigger usually means closer to the camera."""
@@ -92,10 +99,21 @@ class PersonDetector:
         self.detect(Frame(np.zeros((360, 640, 3), dtype=np.uint8), time.time()))
 
     def detect(self, frame: Frame) -> list[Detection]:
+        """People inside the zone."""
+        people = self.detect_classes(frame, (PERSON_CLASS,))[PERSON_CLASS]
+        if self.zone is None:
+            return people
+        return [d for d in people if self.zone.contains(d.center, frame.image.shape)]
+
+    def detect_classes(self, frame: Frame, classes: Sequence[int]) -> dict[int, list[Detection]]:
+        """Everything of the given classes, ignoring the zone (used to log detections for tuning).
+
+        Asking for more classes costs nothing extra: the model looks for all of them anyway.
+        """
         started = time.perf_counter()
         result = self._model.predict(
             frame.image,
-            classes=[PERSON_CLASS],
+            classes=list(classes),
             conf=self.min_confidence,
             imgsz=IMAGE_SIZE,
             device="cpu",
@@ -104,23 +122,24 @@ class PersonDetector:
         self.last_inference_ms = (time.perf_counter() - started) * 1000
 
         boxes = result.boxes
-        detections = []
+        found: dict[int, list[Detection]] = {c: [] for c in classes}
         for box, confidence, cls in zip(boxes.xyxy.tolist(), boxes.conf.tolist(), boxes.cls.tolist()):
-            if int(cls) != PERSON_CLASS or confidence < self.min_confidence:
-                continue
-            detection = Detection(tuple(box), confidence, frame.timestamp)
-            if self.zone is not None and not self.zone.contains(detection.center, frame.image.shape):
-                continue
-            detections.append(detection)
-        return detections
+            if int(cls) in found and confidence >= self.min_confidence:
+                found[int(cls)].append(Detection(tuple(box), confidence, frame.timestamp))
+        return found
 
 
-def draw_detections(image: np.ndarray, detections: list[Detection], zone: Zone | None) -> np.ndarray:
-    """Return a copy of `image` with the zone outline and person boxes drawn on it."""
+def draw_detections(
+    image: np.ndarray, detections: list[Detection], zone: Zone | None, entry_zone: Zone | None = None
+) -> np.ndarray:
+    """Return a copy of `image` with the zone outlines and person boxes drawn on it."""
     canvas = image.copy()
     if zone is not None:
         polygon = zone.pixel_polygon(image.shape).astype(np.int32)
         cv2.polylines(canvas, [polygon], isClosed=True, color=(0, 215, 255), thickness=2)  # yellow
+    if entry_zone is not None:
+        polygon = entry_zone.pixel_polygon(image.shape).astype(np.int32)
+        cv2.polylines(canvas, [polygon], isClosed=True, color=(255, 160, 0), thickness=2)  # blue
     for detection in detections:
         x1, y1, x2, y2 = (int(v) for v in detection.box)
         cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 200, 0), 2)  # green

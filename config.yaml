@@ -20,9 +20,14 @@ detection:
   zone_mask: null         # optional polygon of normalized [x, y] points, e.g. [[0.1, 0.2], [0.9, 0.2], [0.9, 1.0], [0.1, 1.0]]
 
 events:
-  min_presence_seconds: 1.5   # person must persist this long to start an event
-  end_after_seconds: 8        # event ends after this long with no person
-  cooldown_seconds: 60        # ignore re-triggers right after an event
+  min_presence_seconds: 5     # person must persist this long to start an event (filters passers-by)
+  end_after_seconds: 30       # event ends after this long with no person
+  cooldown_seconds: 300       # ignore re-triggers right after an event
+  pending_grace_seconds: 1    # missed detections this short don't reset the start timer (YOLO flickers)
+  # Arrivals must start here: the street beyond the gate, right side (feet of the person).
+  # Tuned on the evening camera view of 2026-11-10. Redraw it if the camera is re-aimed:
+  # run with --debug-view and click the corners. null = anyone anywhere can start an arrival.
+  entry_zone: [[0.56, 0.40], [1.0, 0.40], [1.0, 0.64], [0.56, 0.62]]
 
 storage:
   db_path: data/events.db
