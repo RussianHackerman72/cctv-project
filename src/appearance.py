@@ -17,10 +17,14 @@ COLOR_NAMES = ("dark", "muted", "red", "orange", "yellow", "green", "cyan", "blu
 _HUE_BUCKETS = ((8, "red"), (20, "orange"), (33, "yellow"), (85, "green"), (100, "cyan"),
                 (130, "blue"), (150, "purple"), (170, "pink"), (181, "red"))
 DARK_VALUE = 50       # below this brightness a pixel is "dark", whatever its hue
-# Below this saturation a pixel is "muted": white, grey, beige, skin tones, faded clothes.
-# Brand jackets (Gojek/Grab green, Shopee orange) are fully saturated (~255); beige and
-# skin measure 85-135, so 150 keeps them from counting as "orange".
-MUTED_SATURATION = 150
+# Below these saturations a pixel is "muted": white, grey, beige, skin tones, faded clothes.
+# On camera, daylight and video compression wash uniforms out: Gojek lime measures ~80,
+# Grab mint ~55, Astro blue ~120 (out of 255). Only the warm hues (red, orange, yellow, pink)
+# need a high bar, because skin (up to ~135) and beige live there; Shopee orange-red is ~150.
+# Tuned on 98 hand-checked courier and household crops from the SD card (97 right, was 61).
+WARM_MIN_SATURATION = 140
+COOL_MIN_SATURATION = 50
+_WARM_HUES = ((0, 33), (150, 181))  # OpenCV hue ranges of red/orange/yellow and pink/red
 
 
 def torso_box(box: Sequence[float]) -> tuple[int, int, int, int]:
@@ -46,7 +50,10 @@ def clothing_colors(image: np.ndarray, box: Sequence[float]) -> dict[str, float]
     hsv = cv2.cvtColor(image[y1:y2, x1:x2], cv2.COLOR_BGR2HSV).reshape(-1, 3).astype(np.int32)
     hue, saturation, value = hsv[:, 0], hsv[:, 1], hsv[:, 2]
     dark = value < DARK_VALUE
-    muted = ~dark & (saturation < MUTED_SATURATION)
+    warm = np.zeros(len(hue), dtype=bool)
+    for low, high in _WARM_HUES:
+        warm |= (hue >= low) & (hue < high)
+    muted = ~dark & (saturation < np.where(warm, WARM_MIN_SATURATION, COOL_MIN_SATURATION))
     colourful = ~dark & ~muted
 
     counts = dict.fromkeys(COLOR_NAMES, 0)

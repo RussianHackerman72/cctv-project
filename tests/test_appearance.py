@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 import pytest
 
@@ -31,9 +32,18 @@ def test_torso_box_skips_head_legs_and_sides():
         ((140, 180, 210), "muted"),   # beige coat: pale orange, but not a brand colour
         ((80, 120, 170), "muted"),    # tan skin
         ((0, 50, 140), "orange"),     # Shopee orange at dusk (darker, still vivid)
+        (("hsv", 58, 80, 185), "green"),    # Gojek lime as measured on camera (washed out)
+        (("hsv", 70, 55, 210), "green"),    # Grab mint as measured on camera
+        (("hsv", 104, 120, 190), "blue"),   # Astro blue as measured on camera
+        (("hsv", 5, 160, 230), "red"),      # Shopee orange-red as measured on camera
+        (("hsv", 15, 44, 215), "muted"),    # beige uniform as measured on camera
+        (("hsv", 10, 135, 170), "muted"),   # strongly tanned skin
     ],
 )
 def test_jacket_colour_is_named(jacket_bgr, expected):
+    if jacket_bgr[0] == "hsv":   # given as OpenCV hue (0-180), saturation, value
+        hsv = np.array([[jacket_bgr[1:]]], dtype=np.uint8)
+        jacket_bgr = tuple(int(c) for c in cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0])
     colors = clothing_colors(person_image(jacket_bgr), BOX)
     assert max(colors, key=colors.get) == expected
     assert colors[expected] == pytest.approx(1.0)
