@@ -67,6 +67,43 @@ def clothing_colors(image: np.ndarray, box: Sequence[float]) -> dict[str, float]
     return {name: round(count / total, 3) for name, count in counts.items()}
 
 
+def legs_box(box: Sequence[float]) -> tuple[int, int, int, int]:
+    """The lower-body part of a person box (trousers, shorts, skirt), avoiding the feet."""
+    x1, y1, x2, y2 = box
+    width, height = x2 - x1, y2 - y1
+    return (int(x1 + 0.25 * width), int(y1 + 0.6 * height), int(x2 - 0.25 * width), int(y1 + 0.9 * height))
+
+
+def signature(image: np.ndarray, box: Sequence[float]) -> tuple[float, ...] | None:
+    """What someone's clothes look like as six numbers: the typical colour of the upper and the
+    lower body, each as L*a*b* (lightness, green-red, blue-yellow; OpenCV's 0-255 scale).
+
+    Used to recognise the same person later the same day. None if the box is too small.
+    """
+    values: list[float] = []
+    height, width = image.shape[:2]
+    for x1, y1, x2, y2 in (torso_box(box), legs_box(box)):
+        x1, x2 = max(0, x1), min(width, x2)
+        y1, y2 = max(0, y1), min(height, y2)
+        if x2 - x1 < 3 or y2 - y1 < 3:
+            return None
+        lab = cv2.cvtColor(image[y1:y2, x1:x2], cv2.COLOR_BGR2LAB).reshape(-1, 3)
+        values += [round(float(v), 1) for v in np.median(lab, axis=0)]
+    return tuple(values)
+
+
+BRIGHTNESS_WEIGHT = 0.5  # garage shade and street sun change how bright the same shirt looks
+
+
+def signature_distance(a: Sequence[float], b: Sequence[float]) -> float:
+    """How different two signatures are (0 = identical; clearly different clothes are 30+)."""
+    total = 0.0
+    for i, (x, y) in enumerate(zip(a, b)):
+        weight = BRIGHTNESS_WEIGHT if i % 3 == 0 else 1.0   # L is the first of each L, a, b triple
+        total += (weight * (x - y)) ** 2
+    return total ** 0.5
+
+
 def as_vector(colors: dict[str, float]) -> list[float]:
     """The colour shares as a list in COLOR_NAMES order (compact for the log)."""
     return [colors.get(name, 0.0) for name in COLOR_NAMES]

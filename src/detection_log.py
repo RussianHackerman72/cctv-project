@@ -5,10 +5,11 @@ Format: JSON Lines (one JSON object per line), boxes in normalized coordinates (
 
     {"meta": {"version": 1, "width": 640, "height": 360, "fps": 3, "colors": ["dark", ...]}}
     {"t": 1794448800.33}                                             frame with nobody in it
-    {"t": 1794448800.67, "p": [[x1, y1, x2, y2, conf, [colour shares]]], "m": [[x1, y1, x2, y2, conf]]}
+    {"t": 1794448800.67, "p": [[x1, y1, x2, y2, conf, [colour shares], [signature]]], "m": [[x1, y1, x2, y2, conf]]}
     {"gap": [1794448900.0, 1794449100.0]}                            no footage in between
 
-"p" = people (with their clothing colour shares, see appearance.COLOR_NAMES), "m" = motorcycles.
+"p" = people (with their clothing colour shares, see appearance.COLOR_NAMES, and from version 2
+their clothing signature, see appearance.signature, or null), "m" = motorcycles.
 """
 from __future__ import annotations
 
@@ -21,13 +22,15 @@ from typing import IO
 from src.appearance import COLOR_NAMES
 from src.detector import Detection
 
-LOG_VERSION = 1
+LOG_VERSION = 2
+READABLE_VERSIONS = (1, 2)  # version 1 logs just have no signatures
 
 
 @dataclass
 class PersonRecord:
     detection: Detection    # pixel box, in the logged frame size
     colors: dict[str, float]
+    signature: tuple[float, ...] | None = None
 
 
 @dataclass
@@ -53,10 +56,14 @@ class DetectionLogWriter:
                 "version": LOG_VERSION, "width": width, "height": height, "fps": fps, "colors": list(COLOR_NAMES),
             }})
 
-    def frame(self, timestamp: float, people: list[tuple[Detection, list[float]]], motorcycles: list[Detection]) -> None:
+    def frame(self, timestamp: float, people: list[tuple], motorcycles: list[Detection]) -> None:
+        """`people` holds (detection, colour shares) or (detection, colour shares, signature) tuples."""
         record: dict = {"t": round(timestamp, 2)}
         if people:
-            record["p"] = [[*self._box(d), round(d.confidence, 3), colors] for d, colors in people]
+            record["p"] = [
+                [*self._box(person[0]), round(person[0].confidence, 3), *person[1:]]
+                for person in people
+            ]
         if motorcycles:
             record["m"] = [[*self._box(d), round(d.confidence, 3)] for d in motorcycles]
         self._write(record)
@@ -108,7 +115,7 @@ def read_log(path: Path) -> tuple[dict, Iterator[FrameRecord | Gap]]:
     """The log's metadata, and its frames and gaps in order (boxes back in pixels)."""
     file = path.open(encoding="utf-8")
     meta = json.loads(file.readline())["meta"]
-    if meta.get("version") != LOG_VERSION:
+    if meta.get("version") not in READABLE_VERSIONS:
         file.close()
         raise ValueError(f"Unsupported detection log version {meta.get('version')!r}")
     width, height, names = meta["width"], meta["height"], meta["colors"]
@@ -122,7 +129,11 @@ def read_log(path: Path) -> tuple[dict, Iterator[FrameRecord | Gap]]:
                     continue
                 t = data["t"]
                 people = [
-                    PersonRecord(Detection(_pixels(row[:4], width, height), row[4], t), dict(zip(names, row[5])))
+                    PersonRecord(
+                        Detection(_pixels(row[:4], width, height), row[4], t),
+                        dict(zip(names, row[5])),
+                        tuple(row[6]) if len(row) > 6 and row[6] else None,
+                    )
                     for row in data.get("p", [])
                 ]
                 motorcycles = [Detection(_pixels(row[:4], width, height), row[4], t) for row in data.get("m", [])]

@@ -35,7 +35,7 @@ import cv2
 import numpy as np
 
 from src.app import EventHandler
-from src.appearance import as_vector, clothing_colors
+from src.appearance import as_vector, clothing_colors, signature
 from src.config import Config, ConfigError, load_config, parse_utc_offset
 from src.detection_log import DetectionLogWriter, read_meta, resume_point
 from src.detector import MOTORCYCLE_CLASS, PERSON_CLASS, Detection, PersonDetector, Zone
@@ -232,7 +232,7 @@ def replay(
                 people = found[PERSON_CLASS]
                 detection_log.frame(
                     frame.timestamp,
-                    [(d, as_vector(clothing_colors(frame.image, d.box))) for d in people],
+                    [(d, as_vector(clothing_colors(frame.image, d.box)), signature(frame.image, d.box)) for d in people],
                     found[MOTORCYCLE_CLASS],
                 )
                 if detector.zone is not None:

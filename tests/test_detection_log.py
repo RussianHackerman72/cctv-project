@@ -81,3 +81,24 @@ def test_rejects_unknown_version(tmp_path):
     path.write_text(json.dumps({"meta": {"version": 99}}) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="version"):
         read_log(path)
+
+
+def test_signatures_round_trip_and_old_logs_still_read(tmp_path):
+    path = tmp_path / "detections.jsonl"
+    writer = DetectionLogWriter(path, 640, 360, fps=3)
+    box = Detection((64, 36, 128, 180), 0.9, 1.0)
+    writer.frame(1.0, [(box, [0.0] * len(COLOR_NAMES), (235.0, 128.0, 128.0, 30.0, 128.0, 128.0)), (box, [0.0] * len(COLOR_NAMES), None)], [])
+    writer.close()
+    _, records = read_log(path)
+    with_sig, without = next(records).people
+    assert with_sig.signature == (235.0, 128.0, 128.0, 30.0, 128.0, 128.0)
+    assert without.signature is None
+
+    old = tmp_path / "old.jsonl"   # version 1: no signature column
+    old.write_text(
+        json.dumps({"meta": {"version": 1, "width": 640, "height": 360, "fps": 3, "colors": list(COLOR_NAMES)}})
+        + '\n{"t":1.0,"p":[[0.1,0.1,0.2,0.5,0.9,' + json.dumps([0.0] * len(COLOR_NAMES)) + "]]}\n",
+        encoding="utf-8",
+    )
+    _, records = read_log(old)
+    assert next(records).people[0].signature is None
