@@ -45,6 +45,31 @@ def tracks_from_log(log_path: Path, min_confidence: float, max_gap: float) -> tu
     return shape, sorted(tracks, key=lambda t: t.first_seen)
 
 
+def tracks_with_signatures(
+    log_path: Path, min_confidence: float, max_gap: float,
+) -> tuple[tuple[int, int, int], list[Track], dict[int, tuple]]:
+    """Like tracks_from_log, plus each detection's clothing signature.
+
+    The signatures are keyed by id(detection); each value is (detection, signature), which keeps the
+    detection alive so its id can't be reused. Look one up with `signatures[id(d)][1]`.
+    """
+    meta, records = read_log(log_path)
+    shape = (meta["height"], meta["width"], 3)
+    tracker = PersonTracker(max_gap)
+    tracks: list[Track] = []
+    signatures: dict[int, tuple] = {}
+    for record in records:
+        if isinstance(record, Gap):
+            tracks += tracker.finish()
+            continue
+        people = [p for p in record.people if p.detection.confidence >= min_confidence]
+        for person in people:
+            signatures[id(person.detection)] = (person.detection, person.signature)
+        tracks += tracker.update(record.timestamp, [p.detection for p in people])
+    tracks += tracker.finish()
+    return shape, sorted(tracks, key=lambda t: t.first_seen), signatures
+
+
 def describe(track: Track, places: Mapping[str, Zone], shape: Sequence[int], tz: timezone) -> str:
     start = datetime.fromtimestamp(track.first_seen, tz).strftime("%H:%M:%S")
     times = dwell(track, places, shape)
