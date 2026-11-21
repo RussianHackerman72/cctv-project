@@ -33,14 +33,14 @@ GitHub repo (public): `RussianHackerman72/cctv-project`, branch `main`.
 
 | Commit | What | Pushed? |
 |---|---|---|
-| 2e1e582 | Tuning: entry zone, replay tools, labelled evaluation, demo videos | yes (origin/main) |
-| f82d7cc | Person tracker: follow people between frames, with named places | **no, local only** |
-| a8909ee | Clothing colours: lower saturation bar for green and blue | **no, local only** |
-| de25b1e | Household memory (first version) and clothing signatures in the log | **no, local only** |
+| 2e1e582 | Tuning: entry zone, replay tools, labelled evaluation, demo videos | yes |
+| f82d7cc | Person tracker: follow people between frames, with named places | yes |
+| a8909ee | Clothing colours: lower saturation bar for green and blue | yes |
+| de25b1e | Household memory (first version) and clothing signatures in the log | yes |
 
 The working tree was clean at handoff, and all **161 tests pass** (`.venv\Scripts\python.exe -m pytest`).
-The user said "commit but don't push yet". Don't push these three until they say so.
-If the folder was copied with its `.git` folder, the local commits came along. Check with `git log --oneline -5`.
+Everything above, plus this handoff note, was pushed to origin/main on 21 Nov 2026.
+On the new device, `git pull` (or a fresh clone) brings it all; check with `git log --oneline -5`.
 
 ## 4. Setting up on the new device
 
@@ -179,7 +179,6 @@ If the folder was copied with its `.git` folder, the local commits came along. C
    - **Step 6, Telegram:** the user must create a bot via @BotFather and put the token in `.env`, never in git;
    - Steps 7–9 of the plan.
 7. Open items that need the user's decision:
-   - **push** the three local commits;
    - the friend's PR #1 on GitHub (not yet decided);
    - the camera choice before Step 9 (field run).
 
