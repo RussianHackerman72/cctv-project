@@ -1,4 +1,7 @@
-from src.explain import Moment, Outcome, read_moments, totals
+from src.detector import Detection
+from src.explain import Moment, Outcome, read_moments, totals, track_hint
+from src.tracker import Track
+from src.uniforms import SHOPEE
 
 HEADER = "start_local,end_local,title,should_alert\n"
 
@@ -22,3 +25,11 @@ def test_totals_skip_unjudged_and_empty_snippets():
     outcomes = [outcome(True, True, True), outcome(False, True, False), outcome(None, True, False),
                 outcome(True, False, False, frames=0)]   # no footage: not counted
     assert totals(outcomes) == ["current rule: 1 of 2 right", "new rule: 2 of 2 right"]
+
+
+def test_track_hint_uses_the_colours_seen_so_far():
+    detections = [Detection((0, 0, 10, 20), 0.9, float(t)) for t in range(5)]
+    track = Track(1, detections)
+    colours = {id(d): {"orange": 0.2, "red": 0.2} for d in detections[:4]}   # last frame not measured
+    assert track_hint(track, colours) == SHOPEE
+    assert track_hint(track, {}) is None

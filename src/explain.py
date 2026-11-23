@@ -14,7 +14,8 @@ the sidebar shows:
 - the NEW RULE being tested, the two-stage rule in src/confirm.py: the alert is only confirmed once
   someone who came from the street walks into the garage, or someone comes out to meet them;
 - each person's clothing verdict from the household memory (filled from the day's replay log,
-  `--results`, up to the snippet's start).
+  `--results`, up to the snippet's start);
+- for people from the street, the uniform hint (src/uniforms.py) the alert would carry.
 """
 from __future__ import annotations
 
@@ -33,12 +34,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from src.appearance import signature
+from src.appearance import clothing_colors, signature
 from src.config import Config, ConfigError, load_config, parse_utc_offset
 from src.confirm import (
     CONFIRMED, EXPIRED, IGNORED, LOOK_BACK, WAITING, Confirmer, household_on_street, is_street_origin,
 )
-from src.demo import VIDEO_H, VIDEO_W, VideoWriter, clips_for, frames_between, text
+from src.demo import FONT, VIDEO_H, VIDEO_W, VideoWriter, clips_for, frames_between, text
 from src.detector import Detection, PersonDetector, Zone
 from src.events import EventEnded, EventStarted, EventTracker, State
 from src.household import NOT_SURE, PROBABLY_HOUSEHOLD, HouseholdMemory, Verdict, track_signature
@@ -47,6 +48,7 @@ from src.replay import find_clips
 from src.tracker import PersonTracker, Track, origin, place_of, route
 from src.tracks import read_places, tracks_with_signatures
 from src.tune import Rules, run_rules
+from src.uniforms import ASTRO, GOJEK_GRAB, SHOPEE, best_hint, uniform_hint
 
 log = logging.getLogger("explain")
 
@@ -63,6 +65,7 @@ FROM_COLORS = {"street": ORANGE, "garage": GREEN, "elsewhere": GREY}
 PLACE_COLORS = {"garage": GREEN, "our_frontage": ORANGE}
 CURRENT_COLORS = {State.IDLE: GREY, State.PENDING: (0, 200, 255), State.ACTIVE: RED, State.COOLDOWN: (200, 140, 60)}
 RULE_COLORS = {None: GREY, WAITING: (0, 200, 255), CONFIRMED: GREEN, IGNORED: GREY, EXPIRED: GREY}
+HINT_COLORS = {GOJEK_GRAB: (60, 230, 160), SHOPEE: ORANGE, ASTRO: BLUE, None: GREY}
 
 
 # --- inputs -------------------------------------------------------------------------------
@@ -135,9 +138,16 @@ class Snippet:
     memory: HouseholdMemory
     people: list[Track] = field(default_factory=list)   # seen in the latest analysed frame
     verdicts: dict[int, Verdict] = field(default_factory=dict)
+    colours: dict[int, dict] = field(default_factory=dict)   # id(detection) -> clothing colour shares
+    alert_hint: str | None = None                            # the uniform hint when the new rule confirmed
     current_alerted: bool = False
     current_alert_at: float | None = None
     banners: dict[str, float] = field(default_factory=dict)
+
+
+def track_hint(track: Track, colours: Mapping[int, Mapping[str, float]]) -> str | None:
+    """The uniform hint for one person, from the colours of the frames seen so far."""
+    return uniform_hint([colours[id(d)] for d in track.detections if id(d) in colours])
 
 
 def from_of(track: Track, places, shape) -> str:
@@ -183,6 +193,17 @@ class Panel:
         for part in (textwrap.wrap(value, wrap) if wrap else [value]) or [""]:
             self.y += int(34 * scale) + 6
             text(self.image, part, indent, self.y, scale, color, 2 if scale >= 0.65 else 1)
+
+    def pair(self, first: str, first_color, second: str, second_color, scale: float = 0.4, indent: int = 16) -> None:
+        """One line in two colours: `first`, then `second` right after it."""
+        self.y += int(34 * scale) + 6
+        text(self.image, first, indent, self.y, scale, first_color)
+        width = cv2.getTextSize(first, FONT, scale, 1)[0][0]
+        text(self.image, second, indent + width, self.y, scale, second_color)
+
+    @staticmethod
+    def height(scale: float) -> int:
+        return int(34 * scale) + 6
 
     def gap(self, pixels: int = 8) -> None:
         self.y += pixels
@@ -244,19 +265,27 @@ def draw_panel(snip: Snippet, places, shape, tz, now: float, inference_ms: float
     p.line(why, GREY, 0.4, wrap=48)
     p.gap()
     p.line(f"PEOPLE NOW: {len(snip.people)}", GREY, 0.42)
-    for track in snip.people[:3]:
+    bottom = VIDEO_H - 80 - Panel.height(0.4)   # room for the household memory line above the bottom block
+    for shown, track in enumerate(snip.people):
         where = place_of(track.last, places, shape) or "elsewhere"
         came = from_of(track, places, shape)
+        needed = Panel.height(0.42) + (Panel.height(0.4) if came == "street" else 0)
+        if p.y + needed > bottom:
+            p.line(f"+{len(snip.people) - shown} more", GREY, 0.4)
+            break
         p.line(f"#{track.id} from {came}, {track.seconds:.0f}s, at {where.replace('_', ' ')}", FROM_COLORS[came], 0.42)
         if came == "street":
             value, color = verdict_text(snip.verdicts.get(track.id))
-            p.line(value, color, 0.4, indent=34)
+            hint = track_hint(track, snip.colours)
+            p.pair(value, color, f" | {hint}" if hint else "", HINT_COLORS[hint], indent=34)
     members = len(snip.memory.members)
     p.line(f"household memory: {members} outfit{'s' if members != 1 else ''} today", GREY, 0.4)
-    p.y = VIDEO_H - 58
+    p.y = VIDEO_H - 80
     p.line(f"so far - current rule: {'ALERT' if snip.current_alerted else 'quiet'}", RED if snip.current_alerted else GREY, 0.45)
     p.line(f"so far - new rule: {'ALERT' if snip.rule.state == CONFIRMED else 'quiet'}",
            GREEN if snip.rule.state == CONFIRMED else GREY, 0.45)
+    if snip.rule.state == CONFIRMED:
+        p.line(f"the alert says: {snip.alert_hint or 'no uniform seen'}", HINT_COLORS[snip.alert_hint], 0.42, indent=34)
     text(p.image, f"YOLO11n {inference_ms:.0f} ms", PANEL_W - 120, 22, 0.38, GREY)
     return p.image
 
@@ -279,6 +308,7 @@ class Outcome:
     new: bool
     delay: float | None
     frames: int
+    hint: str | None = None   # the new rule's alert: uniform hint
 
 
 def verdict_word(alerted: bool, should: bool | None) -> str:
@@ -308,6 +338,7 @@ def run_snippet(snip: Snippet, frames, detector: PersonDetector, places, entry_z
             found: list[Detection] = detector.detect(frame)
             for d in found:
                 sigs[id(d)] = (d, signature(frame.image, d.box))
+                snip.colours[id(d)] = clothing_colors(frame.image, d.box)
             ended = people_tracker.update(now, found)
             all_ended += ended
             for track in ended:   # people from the garage are remembered when they leave the picture
@@ -331,6 +362,10 @@ def run_snippet(snip: Snippet, frames, detector: PersonDetector, places, entry_z
                     snip.memory.arrival_ended(now)
             if snip.rule.update(now, known, shape):
                 snip.banners["new"] = now + 3
+                street = [t for t in known if now - t.last_seen < LOOK_BACK and is_street_origin(t, places, shape)]
+                snip.alert_hint = best_hint([snip.colours[id(d)] for d in t.detections if id(d) in snip.colours]
+                                            for t in street)
+                log.info("  new rule confirmed: %s; uniform hint: %s", snip.rule.reason, snip.alert_hint or "none")
             snip.people = [t for t in people_tracker.active if t.last_seen == now]
             for track in snip.people:
                 if track.id not in snip.verdicts and is_street_origin(track, places, shape) and track.seconds >= CHECK_AFTER:
@@ -345,7 +380,7 @@ def run_snippet(snip: Snippet, frames, detector: PersonDetector, places, entry_z
     log.info("  people tracked: %s", describe_tracks(everyone, places, frame.image.shape) if frames_written else "-")
     confirmed = snip.rule.state == CONFIRMED
     delay = snip.rule.confirmed_at - snip.rule.started_at if confirmed else None
-    return Outcome(snip.moment, snip.current_alerted, confirmed, delay, frames_written)
+    return Outcome(snip.moment, snip.current_alerted, confirmed, delay, frames_written, snip.alert_hint if confirmed else None)
 
 
 def make_video(config: Config, detector: PersonDetector, clips, moments: Sequence[Moment], places, entry_zone: Zone,
@@ -366,6 +401,8 @@ def make_video(config: Config, detector: PersonDetector, clips, moments: Sequenc
         ("", WHITE, 0.3),
         ("boxes: orange = came from the street, green = came out of the garage", (210, 210, 210), 0.5),
         ("clothes: the household memory's guess (it learns outfits of people seen in the garage today)", (210, 210, 210), 0.5),
+        ("uniform: a hint from the colour of their top - green Gojek/Grab, orange-red Shopee, blue Astro (only a hint)",
+         (210, 210, 210), 0.5),
     ]), 7)
     outcomes: list[Outcome] = []
     try:
@@ -394,6 +431,7 @@ def make_video(config: Config, detector: PersonDetector, clips, moments: Sequenc
                 (f"current rule: {'ALERT' if outcome.current else 'quiet'}   {verdict_word(outcome.current, moment.should_alert)}",
                  RED if outcome.current else GREY, 0.7),
                 (f"new rule: {new}   {verdict_word(outcome.new, moment.should_alert)}", GREEN if outcome.new else GREY, 0.7),
+                *([(f"the alert says: {outcome.hint or 'no uniform seen'}", HINT_COLORS[outcome.hint], 0.6)] if outcome.new else []),
             ]), 3)
         writer.hold(scorecard_image(outcomes), 10)
     finally:
