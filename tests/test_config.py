@@ -140,10 +140,50 @@ def test_entry_zone_parses_and_is_optional(raw):
     raw["events"]["entry_zone"] = [[0.5, 0.4], [1, 0.4], [1, 0.7]]
     assert parse(raw).events.entry_zone == ((0.5, 0.4), (1.0, 0.4), (1.0, 0.7))
     del raw["events"]["entry_zone"]
+    raw["events"].pop("places", None)   # the two-stage rule needs an entry zone
     assert parse(raw).events.entry_zone is None
 
 
 def test_bad_entry_zone_raises(raw):
     raw["events"]["entry_zone"] = [[0.5, 0.4], [2, 0.4], [1, 0.7]]
+    with pytest.raises(ConfigError, match="entry_zone"):
+        parse(raw)
+
+
+GARAGE = [[0, 0.3], [0.56, 0.3], [0.56, 1], [0, 1]]
+
+
+def test_places_switch_on_the_two_stage_rule(raw):
+    raw["events"]["places"] = {"street": [[0.6, 0.4], [1, 0.4], [1, 0.6]], "garage": GARAGE}
+    raw["events"]["confirm_wait_seconds"] = 60
+    events = parse(raw).events
+    assert set(events.places) == {"street", "garage"}
+    assert events.places["garage"][0] == (0.0, 0.3)
+    assert events.confirm_wait_seconds == 60
+
+    raw["events"]["places"] = None
+    del raw["events"]["confirm_wait_seconds"]
+    events = parse(raw).events
+    assert events.places is None            # one-stage: every heads-up is an arrival
+    assert events.confirm_wait_seconds == 90
+
+
+@pytest.mark.parametrize(
+    "places, message",
+    [
+        ({"street": [[0.6, 0.4], [1, 0.4], [1, 0.6]]}, "garage"),
+        ({"garage": [[0, 0], [2, 0], [1, 1]]}, "events.places.garage"),
+        ([GARAGE], "mapping"),
+    ],
+)
+def test_bad_places_raise(raw, places, message):
+    raw["events"]["places"] = places
+    with pytest.raises(ConfigError, match=message):
+        parse(raw)
+
+
+def test_places_need_an_entry_zone(raw):
+    raw["events"]["places"] = {"garage": GARAGE}
+    raw["events"]["entry_zone"] = None
     with pytest.raises(ConfigError, match="entry_zone"):
         parse(raw)

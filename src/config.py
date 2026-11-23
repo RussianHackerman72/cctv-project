@@ -51,6 +51,9 @@ class EventsConfig:
     cooldown_seconds: float
     entry_zone: tuple[tuple[float, float], ...] | None  # arrivals must start here (the street side)
     pending_grace_seconds: float = 0.0  # missed detections this short don't reset a pending arrival
+    # Named areas of the camera view, one called "garage". Set: the two-stage rule (src/confirm.py).
+    places: dict[str, tuple[tuple[float, float], ...]] | None = None
+    confirm_wait_seconds: float = 90.0
 
 
 @dataclass(frozen=True)
@@ -149,6 +152,9 @@ def parse_config(raw: object, base_dir: Path, env: Mapping[str, str]) -> Config:
             entry_zone=_parse_zone(events.get("entry_zone"), "events.entry_zone"),
             pending_grace_seconds=float(_number(events, "events", "pending_grace_seconds", at_least=0))
             if "pending_grace_seconds" in events else 0.0,
+            places=_parse_places(events),
+            confirm_wait_seconds=float(_number(events, "events", "confirm_wait_seconds", above=0))
+            if "confirm_wait_seconds" in events else 90.0,
         ),
         storage=StorageConfig(
             db_path=resolve(_text(storage, "storage", "db_path")),
@@ -250,6 +256,19 @@ def _parse_zone(value: object, name: str) -> tuple[tuple[float, float], ...] | N
             raise ConfigError(f"{name} point {point!r} must be [x, y] with values from 0 to 1")
         points.append((float(point[0]), float(point[1])))
     return tuple(points)
+
+
+def _parse_places(events: dict) -> dict[str, tuple[tuple[float, float], ...]] | None:
+    value = events.get("places")
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError("'events.places' must be null or a mapping of names to [x, y] point lists")
+    if "garage" not in value:
+        raise ConfigError("'events.places' needs one called 'garage' (the two-stage rule checks it)")
+    if events.get("entry_zone") is None:
+        raise ConfigError("'events.places' needs 'events.entry_zone' too: the two-stage rule starts there")
+    return {str(name): _parse_zone(points, f"events.places.{name}") for name, points in value.items()}
 
 
 def _is_fraction(value: object) -> bool:

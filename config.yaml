@@ -28,6 +28,15 @@ events:
   # Tuned on the evening camera view of 2026-11-10. Redraw it if the camera is re-aimed:
   # run with --debug-view and click the corners. null = anyone anywhere can start an arrival.
   entry_zone: [[0.56, 0.40], [1.0, 0.40], [1.0, 0.64], [0.56, 0.62]]
+  # Two-stage rule (src/confirm.py): an arrival above is only a heads-up. It's confirmed when someone
+  # from the street walks into the garage, or someone comes out of the garage to meet them, within
+  # confirm_wait_seconds. Named areas of the same camera view; one must be called garage.
+  # null = one-stage: every arrival counts.
+  places:
+    far_side:     [[0.56, 0.40], [1.0, 0.40], [1.0, 0.55], [0.56, 0.535]]
+    our_frontage: [[0.56, 0.535], [1.0, 0.55], [1.0, 0.66], [0.56, 0.62]]
+    garage:       [[0.0, 0.30], [0.56, 0.30], [0.56, 0.62], [1.0, 0.66], [1.0, 1.0], [0.0, 1.0]]
+  confirm_wait_seconds: 90
 
 storage:
   db_path: data/events.db

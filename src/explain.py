@@ -11,8 +11,8 @@ The moments file lists the snippets to show (times are local):
 For each snippet the picture shows every tracked person, coloured by where they came from, and
 the sidebar shows:
 - the CURRENT RULE (what the live app does now: 5 s in the entry zone sends an alert);
-- the NEW RULE being tested: the alert only counts once someone who came from the street walks
-  into the garage, and arrivals started by someone coming out of the garage are ignored;
+- the NEW RULE being tested, the two-stage rule in src/confirm.py: the alert is only confirmed once
+  someone who came from the street walks into the garage, or someone comes out to meet them;
 - each person's clothing verdict from the household memory (filled from the day's replay log,
   `--results`, up to the snippet's start).
 """
@@ -35,6 +35,9 @@ import numpy as np
 
 from src.appearance import signature
 from src.config import Config, ConfigError, load_config, parse_utc_offset
+from src.confirm import (
+    CONFIRMED, EXPIRED, IGNORED, LOOK_BACK, WAITING, Confirmer, household_on_street, is_street_origin,
+)
 from src.demo import VIDEO_H, VIDEO_W, VideoWriter, clips_for, frames_between, text
 from src.detector import Detection, PersonDetector, Zone
 from src.events import EventEnded, EventStarted, EventTracker, State
@@ -53,10 +56,6 @@ OUTPUT_FPS = 10
 MAX_GAP = 3.0            # seconds someone may be missed and keep their track
 MIN_GARAGE_TRACK = 2.0   # shorter garage tracks aren't remembered (often a flicker)
 CHECK_AFTER = 5.0        # a street person's clothes are checked this long after they appear
-TRIGGER_WINDOW = 6.0     # who started an arrival: people in the entry zone this long before it fired
-RECENT = 15.0            # a street person "in the garage" if they were there this recently
-
-WAITING, CONFIRMED, IGNORED, EXPIRED = "waiting", "confirmed", "ignored", "not confirmed"
 
 WHITE, GREY, DARK = (255, 255, 255), (150, 150, 150), (30, 30, 30)
 RED, GREEN, ORANGE, BLUE = (60, 60, 230), (80, 200, 80), (0, 150, 255), (255, 200, 0)
@@ -64,61 +63,6 @@ FROM_COLORS = {"street": ORANGE, "garage": GREEN, "elsewhere": GREY}
 PLACE_COLORS = {"garage": GREEN, "our_frontage": ORANGE}
 CURRENT_COLORS = {State.IDLE: GREY, State.PENDING: (0, 200, 255), State.ACTIVE: RED, State.COOLDOWN: (200, 140, 60)}
 RULE_COLORS = {None: GREY, WAITING: (0, 200, 255), CONFIRMED: GREEN, IGNORED: GREY, EXPIRED: GREY}
-
-
-# --- the new rule (pure logic) ---------------------------------------------------------------
-
-class GarageRule:
-    """An alert only counts once someone who came from the street reaches the garage.
-
-    Fed by the current rule: `arrival_started` when it would send an alert, then `update` on
-    every analysed frame. Arrivals started by people coming out of the garage are ignored.
-    """
-
-    def __init__(self, wait_seconds: float = 90.0):
-        self.wait = wait_seconds
-        self.state: str | None = None
-        self.started_at = 0.0
-        self.confirmed_at: float | None = None
-
-    def arrival_started(self, timestamp: float, from_street: bool) -> None:
-        self.started_at = timestamp
-        self.confirmed_at = None
-        self.state = WAITING if from_street else IGNORED
-
-    def update(self, timestamp: float, street_person_in_garage: bool) -> bool:
-        """True on the frame the alert is confirmed."""
-        if self.state != WAITING:
-            return False
-        if street_person_in_garage:
-            self.state, self.confirmed_at = CONFIRMED, timestamp
-            return True
-        if timestamp - self.started_at > self.wait:
-            self.state = EXPIRED
-        return False
-
-
-def is_street_origin(track: Track, places: Mapping[str, Zone], shape: Sequence[int]) -> bool:
-    where = origin(track, places, shape)
-    return where is not None and where != "garage"
-
-
-def came_from_street(tracks: Sequence[Track], entry_zone: Zone, places: Mapping[str, Zone],
-                     shape: Sequence[int], now: float, window: float = TRIGGER_WINDOW) -> bool:
-    """Did the people who started the arrival come from the street? (If we can't tell: yes.)"""
-    starters = [t for t in tracks
-                if any(now - window <= d.timestamp <= now and entry_zone.contains(d.foot, shape) for d in t.detections)]
-    return not starters or any(origin(t, places, shape) != "garage" for t in starters)
-
-
-def street_person_in_garage(tracks: Sequence[Track], places: Mapping[str, Zone], shape: Sequence[int],
-                            now: float, recent: float = RECENT) -> bool:
-    """Is (or was, moments ago) someone who came from the street standing in the garage?"""
-    return any(
-        is_street_origin(t, places, shape)
-        and any(now - recent <= d.timestamp <= now and place_of(d, places, shape) == "garage" for d in t.detections)
-        for t in tracks
-    )
 
 
 # --- inputs -------------------------------------------------------------------------------
@@ -187,7 +131,7 @@ class Snippet:
     number: int
     total: int
     current: EventTracker
-    rule: GarageRule
+    rule: Confirmer
     memory: HouseholdMemory
     people: list[Track] = field(default_factory=list)   # seen in the latest analysed frame
     verdicts: dict[int, Verdict] = field(default_factory=dict)
@@ -255,13 +199,13 @@ def current_text(snip: Snippet, now: float) -> tuple[str, str]:
     return "IDLE", "nobody in the entry zone"
 
 
-def rule_text(rule: GarageRule, now: float) -> tuple[str, str]:
+def rule_text(rule: Confirmer, now: float) -> tuple[str, str]:
     if rule.state == WAITING:
-        return f"WAITING {now - rule.started_at:.0f}s", "for someone from the street to enter the garage"
+        return f"WAITING {now - rule.started_at:.0f}s", "for them to enter the garage, or someone to come out"
     if rule.state == CONFIRMED:
-        return f"CONFIRMED +{rule.confirmed_at - rule.started_at:.0f}s", "came from the street into the garage"
+        return f"CONFIRMED +{rule.confirmed_at - rule.started_at:.0f}s", rule.reason
     if rule.state == IGNORED:
-        return "IGNORED", "started by someone coming out of the garage"
+        return "IGNORED", rule.reason
     if rule.state == EXPIRED:
         return "NOT CONFIRMED", "they stayed on the street"
     return "-", "waits for the current rule's alert"
@@ -354,6 +298,7 @@ def run_snippet(snip: Snippet, frames, detector: PersonDetector, places, entry_z
     sigs: dict[int, tuple] = {}
     recently_ended: list[Track] = []
     all_ended: list[Track] = []
+    household_outside_at: float | None = None
     next_detection = snip.moment.start
     frames_written = 0
     for frame in frames:
@@ -370,19 +315,21 @@ def run_snippet(snip: Snippet, frames, detector: PersonDetector, places, entry_z
                     sig = track_signature(sigs[id(d)][1] for d in track.detections)
                     if sig:
                         snip.memory.remember(sig, now)
-            recently_ended = [t for t in recently_ended + ended if now - t.last_seen < RECENT]
+            recently_ended = [t for t in recently_ended + ended if now - t.last_seen < LOOK_BACK]
             known = people_tracker.active + recently_ended
+            if household_on_street(people_tracker.active, places, shape, now):
+                household_outside_at = now
             for event in snip.current.update(now, found, shape):
                 if isinstance(event, EventStarted):
                     snip.current_alerted, snip.current_alert_at = True, now
                     snip.banners["current"] = now + 3
                     snip.memory.arrival_started(now)
-                    snip.rule.arrival_started(now, came_from_street(known, entry_zone, places, shape, now))
+                    snip.rule.heads_up(now, known, shape, household_outside_at)
                     log.info("  alert at %s; new rule %s; people: %s", datetime.fromtimestamp(now, tz).strftime("%H:%M:%S"),
                              snip.rule.state, describe_tracks(known, places, shape))
                 elif isinstance(event, EventEnded):
                     snip.memory.arrival_ended(now)
-            if snip.rule.update(now, street_person_in_garage(known, places, shape, now)):
+            if snip.rule.update(now, known, shape):
                 snip.banners["new"] = now + 3
             snip.people = [t for t in people_tracker.active if t.last_seen == now]
             for track in snip.people:
@@ -413,8 +360,9 @@ def make_video(config: Config, detector: PersonDetector, clips, moments: Sequenc
         (datetime.fromtimestamp(moments[0].start, tz).strftime("%A %d %B %Y") + f", {len(moments)} moments", (210, 210, 210), 0.6),
         ("", WHITE, 0.3),
         ("CURRENT RULE (live app): someone 5 s in the blue entry zone sends an alert", RED, 0.55),
-        ("NEW RULE (testing): the alert only counts once someone from the street walks into the garage;", GREEN, 0.55),
-        ("     arrivals started by someone coming out of the garage are ignored", GREEN, 0.55),
+        ("NEW RULE (testing): that alert is only confirmed once someone from the street walks into the garage,", GREEN, 0.55),
+        ("     or someone comes out of the garage to meet them; started by someone coming out: ignored", GREEN, 0.55),
+        ("     also ignored: someone from the house was out on the street in the last 3 minutes", GREEN, 0.55),
         ("", WHITE, 0.3),
         ("boxes: orange = came from the street, green = came out of the garage", (210, 210, 210), 0.5),
         ("clothes: the household memory's guess (it learns outfits of people seen in the garage today)", (210, 210, 210), 0.5),
@@ -430,7 +378,7 @@ def make_video(config: Config, detector: PersonDetector, clips, moments: Sequenc
             snip = Snippet(moment, number, len(moments),
                            EventTracker(ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds, entry_zone,
                                         ev.pending_grace_seconds),
-                           GarageRule(wait), memory)
+                           Confirmer(places, entry_zone, wait), memory)
             frames = frames_between(clips_for(clips, moment.start, moment.end), moment.start, moment.end,
                                     OUTPUT_FPS, stream, ffmpeg)
             outcome = run_snippet(snip, frames, detector, places, entry_zone, tz, 1.0 / config.detection.fps, writer)

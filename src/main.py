@@ -50,6 +50,8 @@ def log_config_summary(config: Config) -> None:
         "Events: start after %gs, end after %gs, cooldown %gs",
         ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds,
     )
+    if ev.places:
+        log.info("Two-stage rule: confirm within %gs (places: %s)", ev.confirm_wait_seconds, ", ".join(ev.places))
     log.info("Storage: %s, snapshots in %s, kept %d days", st.db_path, st.snapshot_dir, st.retention_days)
     log.info("Telegram: %s", telegram)
 

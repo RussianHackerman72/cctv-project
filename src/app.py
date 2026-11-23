@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import cv2
 
 from src.config import Config
+from src.confirm import IGNORED, TwoStage
 from src.detector import Detection, PersonDetector, Zone, draw_detections
 from src.events import BestImproved, EventEnded, EventStarted, EventTracker, Signal
 from src.sources import Frame, FpsSampler, FrameSource, make_source
@@ -111,6 +112,7 @@ class EventHandler:
     """Acts on the tracker's signals: keeps the best snapshot frame, saves events, logs arrivals.
 
     The tracker numbers events with its own keys; the database id is the one people see.
+    With the two-stage rule, an arrival is only a heads-up until `confirmed()` is called.
     Step 6 adds the Telegram message.
     """
 
@@ -129,6 +131,7 @@ class EventHandler:
         self._best_key = 0                    # which tracker key best_frame belongs to
         self._event_ids: dict[int, int] = {}  # tracker key -> database id
         self._saved_at: dict[int, float] = {}  # tracker key -> timestamp of the frame saved so far
+        self._open_key: int | None = None      # the arrival in progress, if any
 
     def handle(self, signal: Signal, frame: Frame | None) -> None:
         if isinstance(signal, BestImproved):
@@ -139,7 +142,19 @@ class EventHandler:
         elif isinstance(signal, EventEnded):
             self._on_ended(signal)
 
+    def confirmed(self, timestamp: float, reason: str) -> None:
+        """The two-stage rule confirmed the arrival in progress (src/confirm.py)."""
+        if self._open_key is None:
+            return
+        name = f"#{self._open_key}"
+        event_id = self._event_ids.get(self._open_key)
+        if self._storage is not None and event_id is not None:
+            name = f"event {event_id}"
+            self._storage.set_confirmed(event_id, timestamp, reason)
+        log.info("Arrival confirmed: %s at %s, %s", name, self._clock(timestamp), reason)
+
     def _on_started(self, signal: EventStarted) -> None:
+        self._open_key = signal.event_key
         name = f"#{signal.event_key}"
         if self._storage is not None:
             event_id = self._storage.create_event(self._camera, signal.started_at)
@@ -160,6 +175,8 @@ class EventHandler:
                 log.info("Saved a better snapshot for %s", name)
             self._storage.finish_event(event_id, signal.ended_at, signal.max_confidence)
         self._saved_at.pop(signal.event_key, None)
+        if self._open_key == signal.event_key:
+            self._open_key = None
         log.info(
             "Arrival ended: %s, %s to %s, max confidence %.2f",
             name, self._clock(signal.started_at), self._clock(signal.ended_at), signal.max_confidence,
@@ -228,6 +245,10 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
     tracker = EventTracker(
         ev.min_presence_seconds, ev.end_after_seconds, ev.cooldown_seconds, entry_zone, ev.pending_grace_seconds
     )
+    two_stage = None
+    if ev.places:
+        places = {name: Zone(points) for name, points in ev.places.items()}
+        two_stage = TwoStage(places, entry_zone, ev.confirm_wait_seconds)
     handler = EventHandler(config.tz, snapshot_source, storage, config.camera_name)
     sampler = FpsSampler(config.detection.fps)
     stats = FrameStats(config.detection.fps)
@@ -249,12 +270,28 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
                 stats.add(frame, detector.last_inference_ms)
                 if detections:
                     log.debug("Detected %s", describe(detections))
-                for signal in tracker.update(frame.timestamp, detections, frame.image.shape):
+                now, shape = frame.timestamp, frame.image.shape
+                if two_stage:
+                    two_stage.see(now, detections, shape)
+                for signal in tracker.update(now, detections, shape):
+                    if two_stage and isinstance(signal, EventStarted):
+                        two_stage.heads_up(now, shape)
+                        if two_stage.confirmer.state == IGNORED:
+                            log.info("Heads-up ignored, %s", two_stage.confirmer.reason)
                     handler.handle(signal, frame)
+                if two_stage:
+                    reason = two_stage.update(now, shape)
+                    if reason:
+                        handler.confirmed(now, reason)
                 if view is not None:
-                    view.show(frame, detections, detector.zone, entry_zone, tracker.describe(frame.timestamp))
+                    status = tracker.describe(now)
+                    if two_stage and status.startswith("ACTIVE"):
+                        status += f" ({two_stage.confirmer.state})"
+                    view.show(frame, detections, detector.zone, entry_zone, status)
             elif source.paced and not source.is_healthy:
                 # Stream is down: let time pass so an open arrival can still end.
+                if two_stage:
+                    two_stage.lost_sight()
                 for signal in tracker.update(time.time(), [], None):
                     handler.handle(signal, None)
             if view is not None and not view.keep_open():

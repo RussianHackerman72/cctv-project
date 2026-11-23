@@ -92,3 +92,23 @@ def test_falls_back_to_detection_frame_if_snapshot_stream_has_nothing_yet():
     handler = EventHandler(WIB, FakeSnapshotSource(None))
     handler.handle(BestImproved(1, 0.5, 100.0), detect_frame)
     assert handler.best_frame is detect_frame
+
+
+def test_confirmation_is_saved_on_the_open_event(storage):
+    handler = EventHandler(WIB, storage=storage)
+    handler.handle(started(1, 100.0), None)
+    handler.confirmed(112.0, "entered the garage")
+    handler.handle(ended(1, 100.0), None)
+    handler.handle(started(2, 1000.0), None)
+    handler.handle(ended(2, 1000.0), None)
+    handler.confirmed(1050.0, "entered the garage")   # arrival already over: nothing to confirm
+
+    first, second = storage.get_event(1), storage.get_event(2)
+    assert first["confirmed_by"] == "entered the garage" and first["confirmed_at"].endswith("+07:00")
+    assert second["confirmed_at"] is None
+
+
+def test_confirmation_without_storage_just_logs():
+    handler = EventHandler(WIB)
+    handler.handle(started(), None)
+    handler.confirmed(105.0, "someone came out to meet them")

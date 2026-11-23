@@ -71,3 +71,42 @@ def test_command_line(busy_log, capsys):
 def test_command_line_without_log(tmp_path, capsys):
     assert main([str(tmp_path)]) == 1
     assert "detections.jsonl" in capsys.readouterr().err
+
+
+# --- the two-stage rule: confirmed once someone from the street reaches the garage -------------
+
+PLACES = {
+    "our_frontage": Zone([(0.5, 0.0), (1.0, 0.0), (1.0, 0.5), (0.5, 0.5)]),
+    "garage": Zone([(0.0, 0.5), (1.0, 0.5), (1.0, 1.0), (0.0, 1.0)]),
+}
+
+
+def walker_log(path, walks, end):
+    """`walks` = [(start, stop, (x, y) at start, (x, y) at stop)]: one person's feet moving in a line."""
+    writer = DetectionLogWriter(path, 640, 360, FPS)
+    for i in range(int(end * FPS)):
+        t = i / FPS
+        people = []
+        for start, stop, (x0, y0), (x1, y1) in walks:
+            if start <= t < stop:
+                f = (t - start) / (stop - start)
+                x, y = x0 + f * (x1 - x0), y0 + f * (y1 - y0)
+                people.append((Detection((x - 30, y - 120, x + 30, y), 0.9, t), []))
+        writer.frame(t, people, [])
+    writer.close()
+    return path
+
+
+def test_confirmed_only_when_someone_from_the_street_reaches_the_garage(tmp_path):
+    street, gate, inside = (500, 140), (500, 170), (480, 300)
+    log = walker_log(tmp_path / "detections.jsonl", [
+        (10, 20, street, gate), (20, 26, gate, inside),     # a courier waits, then walks in
+        (100, 115, street, gate),                           # a neighbour stands at the gate, leaves
+    ], end=200)
+    two_stage = rules(min_presence=5, end_after=30, cooldown=0, entry_zone=PLACES["our_frontage"], places=PLACES)
+    courier, neighbour = run_rules(log, two_stage)
+    assert courier.confirmed_by == "entered the garage" and 20 < courier.confirmed_at < 27
+    assert neighbour.confirmed_at is None and neighbour.confirmed_by is None
+    # Without places, nothing is confirmed (the old one-stage rule).
+    assert all(a.confirmed_at is None for a in run_rules(log, rules(min_presence=5, end_after=30, cooldown=0,
+                                                                     entry_zone=PLACES["our_frontage"])))

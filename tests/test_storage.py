@@ -36,6 +36,31 @@ def test_creates_schema_and_reopens(tmp_path):
     assert {"started_at", "label", "notified", "telegram_message_id"} <= columns
 
 
+V1_EVENTS = """
+CREATE TABLE events (
+  id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT, camera TEXT NOT NULL,
+  max_confidence REAL, snapshot_path TEXT, label TEXT, labeled_at TEXT,
+  notified INTEGER DEFAULT 0, telegram_message_id INTEGER
+);
+CREATE TABLE missed_arrivals (id INTEGER PRIMARY KEY, reported_at TEXT NOT NULL, note TEXT);
+INSERT INTO events (started_at, camera, label) VALUES ('2026-11-01T10:00:00+07:00', 'garage', 'delivery');
+PRAGMA user_version = 1;
+"""
+
+
+def test_upgrades_a_v1_database_and_keeps_its_rows(tmp_path):
+    db = tmp_path / "events.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(V1_EVENTS)
+    storage = Storage(db, tmp_path / "snaps", WIB)
+    event = storage.get_event(1)
+    storage.close()
+    assert event["label"] == "delivery"
+    assert event["confirmed_at"] is None and event["confirmed_by"] is None
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 2
+
+
 def test_refuses_newer_schema(tmp_path):
     db = tmp_path / "events.db"
     with sqlite3.connect(db) as conn:
@@ -104,6 +129,17 @@ def test_telegram_message_marks_notified(storage):
     assert event["notified"] == 1
 
 
+def test_confirmation_is_stored(storage):
+    heads_up_only = storage.create_event("garage", NOW)
+    confirmed = storage.create_event("garage", NOW + 600)
+    storage.set_confirmed(confirmed, NOW + 615, "entered the garage")
+
+    assert storage.get_event(heads_up_only)["confirmed_at"] is None
+    event = storage.get_event(confirmed)
+    assert event["confirmed_at"] == "2026-10-04T14:42:20+07:00"
+    assert event["confirmed_by"] == "entered the garage"
+
+
 def test_invalid_label_rejected(storage):
     event_id = storage.create_event("garage", NOW)
     with pytest.raises(StorageError, match="Unknown label"):
@@ -134,11 +170,14 @@ def test_counts_for_day(storage):
         event_id = storage.create_event("garage", NOW)
         if label:
             storage.set_label(event_id, label, NOW)
+        if label == "delivery":
+            storage.set_confirmed(event_id, NOW, "entered the garage")
     storage.create_event("garage", NOW - DAY)  # yesterday: not counted
     storage.add_missed(NOW)
 
     counts = storage.counts_for_day("2026-10-04")
     assert counts["events"] == 4
+    assert counts["confirmed"] == 2
     assert counts["labels"] == {"delivery": 2, "visitor": 0, "household": 0, "false_alarm": 1}
     assert counts["unlabeled"] == 1
     assert counts["missed"] == 1

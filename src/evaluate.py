@@ -24,6 +24,7 @@ from src.config import ConfigError, load_config
 from src.detection_log import FrameRecord, read_log
 from src.detector import Zone
 from src.labels import LEAD_IN_SECONDS, Label, read_labels
+from src.tracks import read_places
 from src.tune import Rules, run_rules
 
 FRAME_SHAPE_FALLBACK = (360, 640, 3)
@@ -85,6 +86,8 @@ def evaluate(log_path: Path, labels: Sequence[Label], rules: Rules) -> list[Mome
                 last_on_street[i] = record.timestamp
                 moment.street_seconds = max(moment.street_seconds, record.timestamp - stay_start[i] + step)
 
+    if rules.places is not None:   # two-stage rule: only confirmed arrivals send an alert
+        arrivals = [a for a in arrivals if a.confirmed_at is not None]
     for moment in moments:
         label = moment.label
         # An alert counts for this moment if the arrival started during it or in the minute before
@@ -141,6 +144,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-confidence", type=float, help="ignore detections below this confidence")
     parser.add_argument("--grace", type=float, help="seconds of missed detections that don't reset a pending arrival")
     parser.add_argument("--entry-zone", help='where arrivals must start, as JSON, or "none"')
+    parser.add_argument("--places", type=Path,
+                        help="named areas of this camera view (JSON with a 'garage'): score the two-stage rule")
+    parser.add_argument("--confirm-wait", type=float, default=90, help="two-stage: seconds to wait for confirmation")
     parser.add_argument("--until", help="only labels before this local date, YYYY-MM-DD (e.g. before the camera moved)")
     parser.add_argument("--config", default="config.yaml", help="path to config file (default: config.yaml)")
     return parser.parse_args(argv)
@@ -175,13 +181,21 @@ def main(argv: list[str] | None = None) -> int:
         zone=Zone(det.zone_mask) if det.zone_mask else None,
         entry_zone=Zone([tuple(p) for p in entry_points]) if entry_points else None,
         grace=ev.pending_grace_seconds if args.grace is None else args.grace,
+        places=read_places(args.places) if args.places else None,
+        confirm_wait=args.confirm_wait,
     )
     print(
         f"rules: start after {rules.min_presence:g}s, end after {rules.end_after:g}s, "
         f"cooldown {rules.cooldown:g}s, grace {rules.grace:g}s, min confidence {rules.min_confidence:g}, "
-        f"entry zone {'set' if rules.entry_zone else 'none'}; {len(labels)} labelled moments\n"
+        f"entry zone {'set' if rules.entry_zone else 'none'}"
+        + (f", two-stage (confirm within {rules.confirm_wait:g}s)" if rules.places else "")
+        + f"; {len(labels)} labelled moments\n"
     )
-    moments = evaluate(log_path, labels, rules)
+    try:
+        moments = evaluate(log_path, labels, rules)
+    except ValueError as exc:
+        print(f"Problem: {exc}", file=sys.stderr)
+        return 2
     print_report(moments, config.tz)
     color_profile(moments)
     return 0

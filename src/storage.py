@@ -18,7 +18,7 @@ import numpy as np
 log = logging.getLogger("storage")
 
 LABELS = ("delivery", "visitor", "household", "false_alarm")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 JPEG_QUALITY = 85
 
 SCHEMA = """
@@ -32,7 +32,9 @@ CREATE TABLE events (
   label               TEXT,               -- delivery | visitor | household | false_alarm | NULL
   labeled_at          TEXT,
   notified            INTEGER DEFAULT 0,
-  telegram_message_id INTEGER             -- lets us edit the alert later (better photo, label)
+  telegram_message_id INTEGER,            -- lets us edit the alert later (better photo, label)
+  confirmed_at        TEXT,               -- two-stage rule (src/confirm.py); NULL = heads-up only
+  confirmed_by        TEXT                -- which way it was confirmed, e.g. "entered the garage"
 );
 
 CREATE TABLE missed_arrivals (
@@ -41,6 +43,14 @@ CREATE TABLE missed_arrivals (
   note        TEXT
 );
 """
+
+# Steps that bring an older database up to date, keyed by the version they start from.
+UPGRADES = {
+    1: [
+        "ALTER TABLE events ADD COLUMN confirmed_at TEXT",
+        "ALTER TABLE events ADD COLUMN confirmed_by TEXT",
+    ],
+}
 
 
 class StorageError(Exception):
@@ -93,6 +103,9 @@ class Storage:
     def set_telegram_message(self, event_id: int, message_id: int) -> None:
         self._update(event_id, telegram_message_id=message_id, notified=1)
 
+    def set_confirmed(self, event_id: int, confirmed_at: float, reason: str) -> None:
+        self._update(event_id, confirmed_at=self.iso(confirmed_at), confirmed_by=reason)
+
     def set_label(self, event_id: int, label: str, labeled_at: float) -> None:
         if label not in LABELS:
             raise StorageError(f"Unknown label {label!r}; expected one of {', '.join(LABELS)}")
@@ -143,11 +156,14 @@ class Storage:
     # --- summaries -----------------------------------------------------------------
 
     def counts_for_day(self, day: str) -> dict:
-        """Counts for one local date ('YYYY-MM-DD'): events, each label, unlabeled, missed."""
+        """Counts for one local date ('YYYY-MM-DD'): events, confirmed, each label, unlabeled, missed."""
         prefix = f"{day}%"
         with self._lock:
             total = self._db.execute(
                 "SELECT COUNT(*) FROM events WHERE started_at LIKE ?", (prefix,)
+            ).fetchone()[0]
+            confirmed = self._db.execute(
+                "SELECT COUNT(*) FROM events WHERE started_at LIKE ? AND confirmed_at IS NOT NULL", (prefix,)
             ).fetchone()[0]
             by_label = dict(self._db.execute(
                 "SELECT label, COUNT(*) FROM events WHERE started_at LIKE ? AND label IS NOT NULL GROUP BY label",
@@ -157,7 +173,8 @@ class Storage:
                 "SELECT COUNT(*) FROM missed_arrivals WHERE reported_at LIKE ?", (prefix,)
             ).fetchone()[0]
         labels = {label: by_label.get(label, 0) for label in LABELS}
-        return {"events": total, "labels": labels, "unlabeled": total - sum(labels.values()), "missed": missed}
+        return {"events": total, "confirmed": confirmed, "labels": labels,
+                "unlabeled": total - sum(labels.values()), "missed": missed}
 
     # --- retention -----------------------------------------------------------------
 
@@ -215,9 +232,22 @@ class Storage:
                 self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             log.info("Created database schema v%d", SCHEMA_VERSION)
             return
-        raise StorageError(
-            f"Database schema v{version} is newer than this code understands (v{SCHEMA_VERSION})"
-        )
+        if version > SCHEMA_VERSION:
+            raise StorageError(
+                f"Database schema v{version} is newer than this code understands (v{SCHEMA_VERSION})"
+            )
+        # One transaction for all steps: a crash halfway leaves the old version untouched.
+        self._db.execute("BEGIN")
+        try:
+            for start in range(version, SCHEMA_VERSION):
+                for statement in UPGRADES[start]:
+                    self._db.execute(statement)
+            self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self._db.execute("COMMIT")
+        except Exception:
+            self._db.execute("ROLLBACK")
+            raise
+        log.info("Upgraded database schema v%d -> v%d", version, SCHEMA_VERSION)
 
 
 def encode_jpeg(image: np.ndarray) -> bytes:

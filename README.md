@@ -45,6 +45,18 @@ Per-frame detections are turned into one **arrival** per visit (`src/events.py`,
 
 These values were tuned on a full day of SD-card footage (2026-11-10), see "Tuning the rules" below.
 
+**Two-stage rule** (`src/confirm.py`, on when `events.places` is set): the arrival above is only a *heads-up*.
+It's *confirmed* when, within `confirm_wait_seconds` (90 s):
+
+- someone who came from the street walks into the garage, or
+- someone comes out of the garage onto the street to meet them.
+
+A heads-up is ignored if it was started by someone coming *out* of the garage, such as family going out. It's also
+ignored if someone who came out of the garage was on the street in the last 3 minutes (`HOUSEHOLD_OUTSIDE_SECONDS`):
+the tracker often loses people for a moment, and a helper walking back in then looks just like a courier.
+`events.places` names areas of the camera view (one must be `garage`); redraw them with the entry zone if the camera moves.
+The log says `Arrival confirmed: event 12 at 10:19:25, entered the garage`, and the event row records it.
+
 During an arrival, the best snapshot frame is kept: the largest, most confident view of the person.
 The debug window shows the current state in the top-left corner (`IDLE`, `PENDING 0.7s`, `ACTIVE #3`, `COOLDOWN 42s`).
 Per-frame detections are logged only at `logging.level: DEBUG`.
@@ -52,7 +64,9 @@ Per-frame detections are logged only at `logging.level: DEBUG`.
 ## Stored data
 
 - `data/events.db` (SQLite) has one row per arrival: start and end time (local time with offset, e.g. `2026-10-04T14:32:05+07:00`),
-  max confidence, snapshot path, label (from Step 6) and Telegram message id. It also has `missed_arrivals` for `/missed` reports.
+  max confidence, snapshot path, label (from Step 6) and Telegram message id. `confirmed_at` and `confirmed_by` say whether
+  and how the two-stage rule confirmed it (blank = heads-up only). It also has `missed_arrivals` for `/missed` reports.
+  An older database is upgraded automatically on startup, keeping its rows.
 - `data/snapshots/YYYY-MM-DD/<event id>_<HHMMSS>.jpg` holds one JPEG per arrival. It is saved when the arrival starts,
   then replaced if a better frame turns up before it ends.
 - **Retention:** snapshots older than `storage.retention_days` (14) are deleted on startup and once a day.
@@ -89,6 +103,15 @@ python -m src.tune data\replay\2026-11-10 --entry-zone none --from 18:00 --list
 ```
 
 `--resume` on `src.replay` continues a run that was interrupted (crash, Ctrl+C, laptop sleep).
+
+To score the two-stage rule (see "How arrivals are counted"), give `--places` (a JSON file of named areas,
+including a `garage`) to `src.tune` or `src.evaluate`. Older footage from before the camera moved needs its own places and entry zone:
+
+```powershell
+python -m src.tune data\replay\2026-11-09 --places data\places\old-view.json --entry-zone "[[0.42,0.55],[0.78,0.55],[0.80,0.66],[0.42,0.63]]" --list
+```
+
+`src.explain` makes a demo video that shows the one-stage and two-stage rules side by side on chosen moments.
 
 ### Checking against labelled footage
 
