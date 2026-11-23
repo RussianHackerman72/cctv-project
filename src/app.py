@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import cv2
 
+from src.appearance import clothing_colors
 from src.config import Config
 from src.confirm import IGNORED, TwoStage
 from src.detector import Detection, PersonDetector, Zone, draw_detections
@@ -142,8 +143,9 @@ class EventHandler:
         elif isinstance(signal, EventEnded):
             self._on_ended(signal)
 
-    def confirmed(self, timestamp: float, reason: str) -> None:
-        """The two-stage rule confirmed the arrival in progress (src/confirm.py)."""
+    def confirmed(self, timestamp: float, reason: str, hint: str | None = None) -> None:
+        """The two-stage rule confirmed the arrival in progress (src/confirm.py). `hint` is
+        what the visitor's clothes suggest (src/uniforms.py); Step 6 puts it in the alert."""
         if self._open_key is None:
             return
         name = f"#{self._open_key}"
@@ -151,7 +153,7 @@ class EventHandler:
         if self._storage is not None and event_id is not None:
             name = f"event {event_id}"
             self._storage.set_confirmed(event_id, timestamp, reason)
-        log.info("Arrival confirmed: %s at %s, %s", name, self._clock(timestamp), reason)
+        log.info("Arrival confirmed: %s at %s, %s%s", name, self._clock(timestamp), reason, f"; {hint}" if hint else "")
 
     def _on_started(self, signal: EventStarted) -> None:
         self._open_key = signal.event_key
@@ -272,17 +274,20 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
                     log.debug("Detected %s", describe(detections))
                 now, shape = frame.timestamp, frame.image.shape
                 if two_stage:
-                    two_stage.see(now, detections, shape)
+                    colours = [clothing_colors(frame.image, d.box) for d in detections]
+                    two_stage.see(now, detections, shape, colours)
                 for signal in tracker.update(now, detections, shape):
                     if two_stage and isinstance(signal, EventStarted):
                         two_stage.heads_up(now, shape)
                         if two_stage.confirmer.state == IGNORED:
                             log.info("Heads-up ignored, %s", two_stage.confirmer.reason)
+                        elif hint := two_stage.hint(now):
+                            log.info("Heads-up: %s", hint)
                     handler.handle(signal, frame)
                 if two_stage:
                     reason = two_stage.update(now, shape)
                     if reason:
-                        handler.confirmed(now, reason)
+                        handler.confirmed(now, reason, two_stage.hint(now))
                 if view is not None:
                     status = tracker.describe(now)
                     if two_stage and status.startswith("ACTIVE"):

@@ -45,6 +45,7 @@ class Arrival:
     max_confidence: float
     confirmed_at: float | None = None   # two-stage rule only: when (and whether) it was confirmed
     confirmed_by: str | None = None
+    hint: str | None = None             # two-stage only: uniform colours (src/uniforms.py), at confirmation or heads-up
 
 
 def run_rules(log_path: Path, rules: Rules) -> list[Arrival]:
@@ -62,15 +63,19 @@ def run_rules(log_path: Path, rules: Rules) -> list[Arrival]:
             raise ValueError("The two-stage rule needs an entry zone")
         two_stage = TwoStage(rules.places, rules.entry_zone, rules.confirm_wait)
     arrivals: list[Arrival] = []
+    hint: str | None = None   # for the arrival in progress: at the heads-up, then at confirmation
 
     def collect(signals, now: float) -> None:
+        nonlocal hint
         for signal in signals:
             if isinstance(signal, EventStarted) and two_stage:
                 two_stage.heads_up(now, shape)
+                hint = two_stage.hint(now)
             elif isinstance(signal, EventEnded):
                 confirmed_at = two_stage.confirmer.confirmed_at if two_stage else None
                 arrivals.append(Arrival(signal.started_at, signal.ended_at, signal.max_confidence,
-                                        confirmed_at, two_stage.confirmer.reason if confirmed_at else None))
+                                        confirmed_at, two_stage.confirmer.reason if confirmed_at else None, hint))
+                hint = None
 
     for record in records:
         if isinstance(record, Gap):
@@ -79,16 +84,17 @@ def run_rules(log_path: Path, rules: Rules) -> list[Arrival]:
             collect(tracker.update(record.end, [], None), record.end)
             continue
         now = record.timestamp
-        people = [
-            p.detection for p in record.people
+        kept = [
+            p for p in record.people
             if p.detection.confidence >= rules.min_confidence
             and (rules.zone is None or rules.zone.contains(p.detection.center, shape))
         ]
+        people = [p.detection for p in kept]
         if two_stage:
-            two_stage.see(now, people, shape)
+            two_stage.see(now, people, shape, [p.colors for p in kept])
         collect(tracker.update(now, people, shape), now)
-        if two_stage:
-            two_stage.update(now, shape)
+        if two_stage and two_stage.update(now, shape):
+            hint = two_stage.hint(now)
     collect(tracker.finish(), float("inf"))
     return arrivals
 
@@ -103,6 +109,9 @@ def print_summary(arrivals: list[Arrival], tz: timezone, show_list: bool, two_st
         print(f"  confirmed by the two-stage rule: {len(confirmed)}"
               + "".join(f"\n    {reason}: {count}" for reason, count in reasons.items()))
         print(f"  heads-up only (not confirmed): {len(arrivals) - len(confirmed)}")
+        hints = Counter(a.hint for a in arrivals if a.hint)
+        print(f"  with a uniform hint: {sum(hints.values())}"
+              + "".join(f"\n    {hint}: {count}" for hint, count in hints.most_common()))
     by_hour = Counter(datetime.fromtimestamp(a.started_at, tz).hour for a in arrivals)
     print("\nper hour:")
     for hour in range(24):
@@ -118,7 +127,8 @@ def print_summary(arrivals: list[Arrival], tz: timezone, show_list: bool, two_st
             if two_stage:
                 confirmed = (f"  confirmed +{a.confirmed_at - a.started_at:.0f}s: {a.confirmed_by}"
                              if a.confirmed_at is not None else "  heads-up only")
-            print(f"  {start}  {a.ended_at - a.started_at:5.0f}s  confidence {a.max_confidence:.2f}{confirmed}")
+            hint = f"  [{a.hint}]" if a.hint else ""
+            print(f"  {start}  {a.ended_at - a.started_at:5.0f}s  confidence {a.max_confidence:.2f}{confirmed}{hint}")
 
 
 def _in_window(arrival: Arrival, from_time: str | None, to_time: str | None, tz: timezone) -> bool:

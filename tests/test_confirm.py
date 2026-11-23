@@ -174,3 +174,21 @@ def test_two_stage_ignores_a_heads_up_right_after_household_went_out():
         rule.see(t, [person(STREET, t)], SHAPE)
     rule.heads_up(100, SHAPE)
     assert rule.confirmer.state == IGNORED and rule.confirmer.reason == HOUSEHOLD_OUTSIDE
+
+
+def test_two_stage_hint_describes_people_from_the_street():
+    from src.uniforms import GOJEK_GRAB
+    rule = TwoStage(PLACES, ENTRY)
+    green, plain = {"green": 0.5, "muted": 0.5}, {"muted": 1.0}
+    for t in range(95, 101):
+        rule.see(t, [person(STREET, t), person(GARAGE, t)], SHAPE, colours=[green, plain])
+    assert rule.hint(100) == GOJEK_GRAB
+    assert rule.hint(200) is None                     # nobody from the street seen recently
+
+
+def test_two_stage_hint_ignores_household():
+    rule = TwoStage(PLACES, ENTRY)
+    for t in range(95, 101):
+        rule.see(t, [person(GARAGE, t)], SHAPE, colours=[{"green": 0.9}])
+    assert rule.hint(100) is None
+    assert TwoStage(PLACES, ENTRY).hint(100) is None   # no colours given at all

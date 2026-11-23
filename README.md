@@ -57,6 +57,11 @@ the tracker often loses people for a moment, and a helper walking back in then l
 `events.places` names areas of the camera view (one must be `garage`); redraw them with the entry zone if the camera moves.
 The log says `Arrival confirmed: event 12 at 10:19:25, entered the garage`, and the event row records it.
 
+**Uniform hints** (`src/uniforms.py`): if the visitor's top is mostly green ("Gojek or Grab?"), orange-red
+("Shopee?") or blue ("Astro?"), the heads-up and confirmation log lines say so. It's only a hint and never changes
+whether an arrival alerts: plenty of couriers wear no uniform, and blue is a common shirt colour. On 9 Nov it named
+both uniformed couriers and gave 1 wrong hint (a neighbour's helper); on 11 Nov 2 wrong ones (blue shirts). `src.tune --list` shows them.
+
 During an arrival, the best snapshot frame is kept: the largest, most confident view of the person.
 The debug window shows the current state in the top-left corner (`IDLE`, `PENDING 0.7s`, `ACTIVE #3`, `COOLDOWN 42s`).
 Per-frame detections are logged only at `logging.level: DEBUG`.

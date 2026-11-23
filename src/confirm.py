@@ -25,6 +25,7 @@ from collections.abc import Mapping, Sequence
 
 from src.detector import Detection, Zone
 from src.tracker import PersonTracker, Track, origin, place_of
+from src.uniforms import best_hint
 
 GARAGE = "garage"
 WAITING, CONFIRMED, IGNORED, EXPIRED = "waiting", "confirmed", "ignored", "not confirmed"
@@ -87,6 +88,7 @@ class TwoStage:
 
     Per frame: `see()` the people, pass the arrival tracker's signals on (`heads_up()` when an
     arrival starts), then `update()`. Used by the live app and by src/tune.py.
+    Given each person's clothing colours too, `hint()` says if someone looks like a courier.
     """
 
     def __init__(self, places: Mapping[str, Zone], entry_zone: Zone, wait_seconds: float = 90.0,
@@ -95,22 +97,45 @@ class TwoStage:
         self._people = PersonTracker(TRACK_GAP)
         self._recently_ended: list[Track] = []
         self.household_outside_at: float | None = None   # last time someone from the house was on the street
+        self._colours: dict[int, Mapping[str, float]] = {}  # id(detection) -> its clothing colour shares
+        self._shape: Sequence[int] | None = None
 
     @property
     def tracks(self) -> list[Track]:
         """People in view now, and those who left in the last LOOK_BACK seconds."""
         return self._people.active + self._recently_ended
 
-    def see(self, now: float, people: Sequence[Detection], shape: Sequence[int]) -> None:
+    def see(self, now: float, people: Sequence[Detection], shape: Sequence[int],
+            colours: Sequence[Mapping[str, float]] | None = None) -> None:
+        """One frame's people, and optionally their clothing colours (same order)."""
+        self._shape = shape
         ended = self._people.update(now, people)
         self._recently_ended = [t for t in self._recently_ended + ended if now - t.last_seen < LOOK_BACK]
         if household_on_street(self._people.active, self.confirmer.places, shape, now):
             self.household_outside_at = now
+        if colours is not None:
+            for detection, shares in zip(people, colours):
+                self._colours[id(detection)] = shares
+            # Keep only the colours of people still tracked, so this doesn't grow all day.
+            tracked = {id(d) for t in self.tracks for d in t.detections}
+            self._colours = {key: value for key, value in self._colours.items() if key in tracked}
 
     def lost_sight(self) -> None:
         """No footage for a while (stream down, gap between clips): forget who was where."""
         self._people.finish()
         self._recently_ended = []
+        self._colours = {}
+
+    def hint(self, now: float) -> str | None:
+        """Does someone who came from the street, seen in the last LOOK_BACK seconds, wear a courier's colours?"""
+        if self._shape is None:
+            return None
+        people = [
+            [self._colours[id(d)] for d in t.detections if id(d) in self._colours]
+            for t in self.tracks
+            if now - t.last_seen < LOOK_BACK and is_street_origin(t, self.confirmer.places, self._shape)
+        ]
+        return best_hint(people)
 
     def heads_up(self, now: float, shape: Sequence[int]) -> None:
         self.confirmer.heads_up(now, self.tracks, shape, self.household_outside_at)

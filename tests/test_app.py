@@ -112,3 +112,11 @@ def test_confirmation_without_storage_just_logs():
     handler = EventHandler(WIB)
     handler.handle(started(), None)
     handler.confirmed(105.0, "someone came out to meet them")
+
+
+def test_confirmation_log_includes_the_uniform_hint(caplog):
+    handler = EventHandler(WIB)
+    handler.handle(started(), None)
+    with caplog.at_level("INFO", logger="app"):
+        handler.confirmed(105.0, "entered the garage", hint="green top: Gojek or Grab?")
+    assert "entered the garage; green top: Gojek or Grab?" in caplog.text
