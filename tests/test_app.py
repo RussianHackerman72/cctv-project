@@ -120,3 +120,68 @@ def test_confirmation_log_includes_the_uniform_hint(caplog):
     with caplog.at_level("INFO", logger="app"):
         handler.confirmed(105.0, "entered the garage", hint="green top: Gojek or Grab?")
     assert "entered the garage; green top: Gojek or Grab?" in caplog.text
+
+
+# --- Telegram alerts -------------------------------------------------------------------------
+
+class FakeNotifier:
+    def __init__(self):
+        self.sent, self.upgraded = [], []
+
+    def send_event(self, event_id, jpeg, caption):
+        self.sent.append((event_id, jpeg, caption))
+
+    def upgrade_photo(self, event_id, jpeg):
+        self.upgraded.append((event_id, jpeg))
+
+
+def test_two_stage_alerts_on_confirmation_only(storage):
+    notifier = FakeNotifier()
+    handler = EventHandler(WIB, storage=storage, notifier=notifier, alert_on_start=False)
+    handler.handle(BestImproved(1, 0.3, 100.0), frame(640, 100.0))
+    handler.handle(started(), None)
+    assert notifier.sent == []                                  # heads-up: no message
+    handler.confirmed(112.0, "entered the garage", "green top: Gojek or Grab?")
+    (event_id, jpeg, caption), = notifier.sent
+    assert event_id == 1 and jpeg == storage.snapshot_file(storage.get_event(1)).read_bytes()
+    assert "entered the garage · green top: Gojek or Grab?" in caption and "event 1" in caption
+
+
+def test_unconfirmed_heads_up_never_alerts(storage):
+    notifier = FakeNotifier()
+    handler = EventHandler(WIB, storage=storage, notifier=notifier, alert_on_start=False)
+    handler.handle(BestImproved(1, 0.3, 100.0), frame(640, 100.0))
+    handler.handle(started(), None)
+    handler.handle(ended(), None)
+    assert notifier.sent == [] and notifier.upgraded == []
+
+
+def test_one_stage_alerts_when_the_arrival_starts(storage):
+    notifier = FakeNotifier()
+    handler = EventHandler(WIB, storage=storage, notifier=notifier, alert_on_start=True)
+    handler.handle(BestImproved(1, 0.3, 100.0), frame(640, 100.0))
+    handler.handle(started(), None)
+    assert [sent[0] for sent in notifier.sent] == [1]
+
+
+def test_better_photo_after_the_alert_is_sent_as_an_upgrade(storage):
+    notifier = FakeNotifier()
+    handler = EventHandler(WIB, storage=storage, notifier=notifier, alert_on_start=False)
+    handler.handle(BestImproved(1, 0.3, 100.0), frame(640, 100.0, value=10))
+    handler.handle(started(), None)
+    handler.confirmed(105.0, "entered the garage")
+    handler.handle(BestImproved(1, 0.6, 110.0), frame(640, 110.0, value=240))
+    handler.handle(ended(), None)
+    (event_id, jpeg), = notifier.upgraded
+    assert event_id == 1 and jpeg == storage.snapshot_file(storage.get_event(1)).read_bytes()
+    assert jpeg != notifier.sent[0][1]
+
+
+def test_no_upgrade_when_the_photo_didnt_improve(storage):
+    notifier = FakeNotifier()
+    handler = EventHandler(WIB, storage=storage, notifier=notifier, alert_on_start=False)
+    handler.handle(BestImproved(1, 0.3, 100.0), frame(640, 100.0))
+    handler.handle(started(), None)
+    handler.confirmed(105.0, "entered the garage")
+    handler.handle(ended(), None)
+    assert len(notifier.sent) == 1 and notifier.upgraded == []

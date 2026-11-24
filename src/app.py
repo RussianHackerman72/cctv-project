@@ -12,6 +12,7 @@ from src.config import Config
 from src.confirm import IGNORED, TwoStage
 from src.detector import Detection, PersonDetector, Zone, draw_detections
 from src.events import BestImproved, EventEnded, EventStarted, EventTracker, Signal
+from src.notifier import Notifier, alert_caption
 from src.sources import Frame, FpsSampler, FrameSource, make_source
 from src.storage import Storage
 
@@ -113,8 +114,9 @@ class EventHandler:
     """Acts on the tracker's signals: keeps the best snapshot frame, saves events, logs arrivals.
 
     The tracker numbers events with its own keys; the database id is the one people see.
-    With the two-stage rule, an arrival is only a heads-up until `confirmed()` is called.
-    Step 6 adds the Telegram message.
+    With the two-stage rule (`alert_on_start=False`), an arrival is only a heads-up until
+    `confirmed()` is called; that's when the Telegram alert goes out. Without it, every arrival
+    alerts as soon as it starts. A better photo found later replaces the one sent.
     """
 
     def __init__(
@@ -123,11 +125,17 @@ class EventHandler:
         snapshot_source: FrameSource | None = None,
         storage: Storage | None = None,
         camera: str = "garage",
+        notifier: Notifier | None = None,
+        alert_on_start: bool = True,
     ):
         self._tz = tz
         self._snapshot_source = snapshot_source
         self._storage = storage
         self._camera = camera
+        self._notifier = notifier
+        self._alert_on_start = alert_on_start
+        self._started_at: dict[int, float] = {}  # tracker key -> when the person was first seen
+        self._alerted: set[int] = set()          # tracker keys whose alert was sent
         self.best_frame: Frame | None = None  # best frame of the current (possible) event
         self._best_key = 0                    # which tracker key best_frame belongs to
         self._event_ids: dict[int, int] = {}  # tracker key -> database id
@@ -154,6 +162,7 @@ class EventHandler:
             name = f"event {event_id}"
             self._storage.set_confirmed(event_id, timestamp, reason)
         log.info("Arrival confirmed: %s at %s, %s%s", name, self._clock(timestamp), reason, f"; {hint}" if hint else "")
+        self._alert(self._open_key, reason, hint)
 
     def _on_started(self, signal: EventStarted) -> None:
         self._open_key = signal.event_key
@@ -163,10 +172,13 @@ class EventHandler:
             self._event_ids[signal.event_key] = event_id
             name = f"event {event_id}"
             self._save_best(signal.event_key, event_id)
+        self._started_at[signal.event_key] = signal.started_at
         log.info(
             "Arrival started: %s (person seen since %s, confidence %.2f)",
             name, self._clock(signal.started_at), signal.max_confidence,
         )
+        if self._alert_on_start:
+            self._alert(signal.event_key)
 
     def _on_ended(self, signal: EventEnded) -> None:
         name = f"#{signal.event_key}"
@@ -175,14 +187,35 @@ class EventHandler:
             name = f"event {event_id}"
             if self._save_best(signal.event_key, event_id):
                 log.info("Saved a better snapshot for %s", name)
+                if signal.event_key in self._alerted and self._notifier is not None:
+                    self._notifier.upgrade_photo(event_id, self._snapshot_bytes(event_id))
             self._storage.finish_event(event_id, signal.ended_at, signal.max_confidence)
         self._saved_at.pop(signal.event_key, None)
+        self._started_at.pop(signal.event_key, None)
+        self._alerted.discard(signal.event_key)
         if self._open_key == signal.event_key:
             self._open_key = None
         log.info(
             "Arrival ended: %s, %s to %s, max confidence %.2f",
             name, self._clock(signal.started_at), self._clock(signal.ended_at), signal.max_confidence,
         )
+
+    def _alert(self, key: int, reason: str | None = None, hint: str | None = None) -> None:
+        """Send the Telegram alert for this arrival, with the best photo so far."""
+        event_id = self._event_ids.get(key)
+        if self._notifier is None or event_id is None or key in self._alerted:
+            return
+        self._save_best(key, event_id)
+        jpeg = self._snapshot_bytes(event_id)
+        if jpeg is None:
+            log.warning("No snapshot for event %d, so no alert was sent", event_id)
+            return
+        self._alerted.add(key)
+        self._notifier.send_event(event_id, jpeg, alert_caption(event_id, self._started_at[key], self._tz, reason, hint))
+
+    def _snapshot_bytes(self, event_id: int) -> bytes | None:
+        path = self._storage.snapshot_file(self._storage.get_event(event_id))
+        return path.read_bytes() if path is not None and path.exists() else None
 
     def _save_best(self, key: int, event_id: int) -> bool:
         """Save best_frame for this event unless it's already saved. True if a file was written."""
@@ -227,8 +260,13 @@ def describe(detections: list[Detection]) -> str:
     return f"{len(detections)} {noun} ({confidences})"
 
 
-def run(config: Config, max_seconds: float | None = None, debug_view: bool = False) -> None:
-    """Run until Ctrl+C, the end of a video file, `max_seconds`, or the debug window closing."""
+def run(config: Config, max_seconds: float | None = None, debug_view: bool = False,
+        notifier: Notifier | None = None, storage: Storage | None = None) -> None:
+    """Run until Ctrl+C, the end of a video file, `max_seconds`, or the debug window closing.
+
+    With a running `notifier`, alerts also go to Telegram. `storage` is opened here unless given
+    (the notifier shares it, so the bot's label taps land in the same database).
+    """
     log.info("Loading detection model ...")
     detector = PersonDetector.load(config.detection)
 
@@ -238,7 +276,9 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
     sources = [s for s in (source, snapshot_source) if s is not None]
 
     st = config.storage
-    storage = Storage(st.db_path, st.snapshot_dir, config.tz)
+    owns_storage = storage is None
+    if owns_storage:
+        storage = Storage(st.db_path, st.snapshot_dir, config.tz)
     retention = DailyRetention(storage, st.retention_days, config.tz)
     retention.run_if_due()  # on startup, then once per day
 
@@ -251,7 +291,8 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
     if ev.places:
         places = {name: Zone(points) for name, points in ev.places.items()}
         two_stage = TwoStage(places, entry_zone, ev.confirm_wait_seconds)
-    handler = EventHandler(config.tz, snapshot_source, storage, config.camera_name)
+    handler = EventHandler(config.tz, snapshot_source, storage, config.camera_name, notifier,
+                           alert_on_start=two_stage is None)
     sampler = FpsSampler(config.detection.fps)
     stats = FrameStats(config.detection.fps)
     view = DebugView() if debug_view else None
@@ -309,7 +350,8 @@ def run(config: Config, max_seconds: float | None = None, debug_view: bool = Fal
             handler.handle(signal, None)
         for s in sources:
             s.stop()
-        storage.close()
+        if owns_storage:
+            storage.close()
         if view is not None:
             view.close()
         log.info("Stopped after %d frames", stats.total)

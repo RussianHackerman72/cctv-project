@@ -172,12 +172,14 @@ def test_counts_for_day(storage):
             storage.set_label(event_id, label, NOW)
         if label == "delivery":
             storage.set_confirmed(event_id, NOW, "entered the garage")
+            storage.set_telegram_message(event_id, 100 + event_id)   # alert sent
     storage.create_event("garage", NOW - DAY)  # yesterday: not counted
     storage.add_missed(NOW)
 
     counts = storage.counts_for_day("2026-10-04")
     assert counts["events"] == 4
     assert counts["confirmed"] == 2
+    assert counts["alerts"] == 2 and counts["unlabeled_alerts"] == 0
     assert counts["labels"] == {"delivery": 2, "visitor": 0, "household": 0, "false_alarm": 1}
     assert counts["unlabeled"] == 1
     assert counts["missed"] == 1

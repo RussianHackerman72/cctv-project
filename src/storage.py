@@ -156,7 +156,7 @@ class Storage:
     # --- summaries -----------------------------------------------------------------
 
     def counts_for_day(self, day: str) -> dict:
-        """Counts for one local date ('YYYY-MM-DD'): events, confirmed, each label, unlabeled, missed."""
+        """Counts for one local date ('YYYY-MM-DD'): events, confirmed, alerts sent (and unlabelled), labels, missed."""
         prefix = f"{day}%"
         with self._lock:
             total = self._db.execute(
@@ -165,6 +165,10 @@ class Storage:
             confirmed = self._db.execute(
                 "SELECT COUNT(*) FROM events WHERE started_at LIKE ? AND confirmed_at IS NOT NULL", (prefix,)
             ).fetchone()[0]
+            alerts, unlabeled_alerts = self._db.execute(
+                "SELECT COUNT(*), COUNT(*) - COUNT(label) FROM events WHERE started_at LIKE ? AND notified = 1",
+                (prefix,),
+            ).fetchone()
             by_label = dict(self._db.execute(
                 "SELECT label, COUNT(*) FROM events WHERE started_at LIKE ? AND label IS NOT NULL GROUP BY label",
                 (prefix,),
@@ -173,7 +177,8 @@ class Storage:
                 "SELECT COUNT(*) FROM missed_arrivals WHERE reported_at LIKE ?", (prefix,)
             ).fetchone()[0]
         labels = {label: by_label.get(label, 0) for label in LABELS}
-        return {"events": total, "confirmed": confirmed, "labels": labels,
+        return {"events": total, "confirmed": confirmed, "alerts": alerts, "unlabeled_alerts": unlabeled_alerts,
+                "labels": labels,
                 "unlabeled": total - sum(labels.values()), "missed": missed}
 
     # --- retention -----------------------------------------------------------------

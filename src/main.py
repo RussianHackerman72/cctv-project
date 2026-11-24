@@ -8,7 +8,9 @@ import sys
 from src import app
 from src.config import Config, ConfigError, load_config
 from src.logging_setup import redact_url, setup_logging
+from src.notifier import Notifier, NotifierError
 from src.sources import SourceError
+from src.storage import Storage
 
 log = logging.getLogger("main")
 
@@ -72,13 +74,32 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Config OK (--check), exiting")
         return 0
 
+    secrets, st = config.secrets, config.storage
+    notifier = storage = None
+    if secrets.telegram_bot_token and secrets.telegram_chat_id:
+        storage = Storage(st.db_path, st.snapshot_dir, config.tz)   # shared by the camera loop and the bot
+        notifier = Notifier(secrets.telegram_bot_token, secrets.telegram_chat_id, storage, config.tz)
+        try:
+            notifier.start()
+        except NotifierError as exc:
+            log.error("%s. Check TELEGRAM_BOT_TOKEN in .env and the internet connection.", exc)
+            storage.close()
+            return 2
+    else:
+        log.warning("Telegram isn't set up (.env), so alerts only go to the log")
+
     try:
-        app.run(config, max_seconds=args.seconds, debug_view=args.debug_view)
+        app.run(config, max_seconds=args.seconds, debug_view=args.debug_view, notifier=notifier, storage=storage)
     except SourceError as exc:
         log.error("Source problem: %s", exc)
         return 2
     except KeyboardInterrupt:
         log.info("Stopped by user (Ctrl+C)")
+    finally:
+        if notifier is not None:
+            notifier.stop()   # sends what's still queued first
+        if storage is not None:
+            storage.close()
     return 0
 
 

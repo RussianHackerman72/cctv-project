@@ -31,8 +31,9 @@ def setup_logging(level: str = "INFO", log_file: Path | None = None) -> None:
         root.addHandler(file_handler)
 
     # httpx (used by python-telegram-bot) logs every request URL at INFO,
-    # and Telegram URLs contain the bot token. Keep it at WARNING.
+    # and Telegram URLs contain the bot token. Keep it (and httpcore below it) at WARNING.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def redact_url(url: str) -> str:

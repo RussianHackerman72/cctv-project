@@ -66,10 +66,33 @@ During an arrival, the best snapshot frame is kept: the largest, most confident 
 The debug window shows the current state in the top-left corner (`IDLE`, `PENDING 0.7s`, `ACTIVE #3`, `COOLDOWN 42s`).
 Per-frame detections are logged only at `logging.level: DEBUG`.
 
+## Telegram alerts
+
+When an arrival is confirmed (or, with `events.places: null`, as soon as it starts), the bot sends the snapshot with
+the time, how it was confirmed and any uniform hint. If a better photo turns up before the arrival ends, the photo
+in the message is replaced. Heads-ups that are never confirmed don't send anything; they're still in the database.
+
+- **Label buttons** under each alert: Delivery / Visitor / Household / False alarm. A tap saves the label; tap another to change it.
+- **`/missed`** (optionally with a note, e.g. `/missed courier at 2pm`) records a delivery the camera didn't alert for.
+- **`/stats`** shows today's heads-ups, alerts sent, labels and missed arrivals.
+
+Only the chat in `TELEGRAM_CHAT_ID` is answered. Without the two `.env` values below, the app runs as before and
+alerts only go to the log. Only one copy of the app can use the bot at a time.
+
+**Setting up the bot (once):**
+
+1. In Telegram, message **@BotFather**, send `/newbot`, pick a name, and copy the token into `.env` as `TELEGRAM_BOT_TOKEN`.
+2. Send any message to your new bot.
+3. Open `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser (with your token in place of `<TOKEN>`) and copy
+   the number after `"chat":{"id":` into `.env` as `TELEGRAM_CHAT_ID`.
+4. `python -m src.main --check` should now say `Telegram: configured`.
+
+The token is a password for the bot: keep it in `.env` only, which git ignores. The log never shows it.
+
 ## Stored data
 
 - `data/events.db` (SQLite) has one row per arrival: start and end time (local time with offset, e.g. `2026-10-04T14:32:05+07:00`),
-  max confidence, snapshot path, label (from Step 6) and Telegram message id. `confirmed_at` and `confirmed_by` say whether
+  max confidence, snapshot path, label (from the Telegram buttons) and Telegram message id. `confirmed_at` and `confirmed_by` say whether
   and how the two-stage rule confirmed it (blank = heads-up only). It also has `missed_arrivals` for `/missed` reports.
   An older database is upgraded automatically on startup, keeping its rows.
 - `data/snapshots/YYYY-MM-DD/<event id>_<HHMMSS>.jpg` holds one JPEG per arrival. It is saved when the arrival starts,
